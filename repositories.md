@@ -8,6 +8,6 @@
 
 ## GitHub (GH)
 - **URL**: `https://github.com`
-- **User**: *(Pending)*
-- **Repository**: *(Pending)*
-- **API Key / Token**: *(Pending - will update once provided)*
+- **User**: `parabellumlux`
+- **Repository**: `https://github.com/parabellumlux/r2me.git`
+- **API Key / Token**: `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`
