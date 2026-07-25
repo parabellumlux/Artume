@@ -52,28 +52,14 @@ Artume is not a screen reader. It is a complete rethinking of what an operating 
 ---
 
 ## How It Works
-┌──────────────────────────────────────────┐
-│ USER SPEAKS                              │
-│ "Find the tax PDF from yesterday"        │
-└────────────────┬─────────────────────────┘
-▼
-┌──────────────────────────────────────────┐
-│ SPEECH-TO-TEXT (Whisper)                 │
-│ Local, offline, real-time                │
-└────────────────┬─────────────────────────┘
-▼
-┌──────────────────────────────────────────┐
-│ AI ORCHESTRATOR (Ollama)                 │
-│ Intent parsing → action planning         │
-└────────────────┬─────────────────────────┘
-▼
-┌──────────────────────────────────────────┐
-│ COMMAND EXECUTION                        │
-│ File search → open → summarize → read    │
-└────────────────┬─────────────────────────┘
-▼
-┌──────────────────────────────────────────┐
-│ TEXT-TO-SPEECH (Piper)                   │
-│ "Found Tax_Return_2025.pdf. 4 pages.     │
-│ Summary: Standard deduction filed..."    │
-└──────────────────────────────────────────┘
+
+```mermaid
+flowchart TD
+    A["🎤 USER SPEAKS<br/>'Find the tax PDF from yesterday'"]
+    B["🗣️ SPEECH-TO-TEXT<br/>Whisper<br/>Local, offline, real-time"]
+    C["🧠 AI ORCHESTRATOR<br/>Ollama + Llama/Mistral<br/>Intent parsing → action planning"]
+    D["⚡ COMMAND EXECUTION<br/>File search → open → summarize → read"]
+    E["🔊 TEXT-TO-SPEECH<br/>Piper TTS<br/>'Found Tax_Return_2025.pdf. 4 pages.<br/>Summary: Standard deduction filed...'"]
+    
+    A --> B --> C --> D --> E
+```
