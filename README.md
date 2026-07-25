@@ -1,4 +1,4 @@
-# Artume
+ Artume
 
 <div align="center">
 
@@ -52,3 +52,28 @@ Artume is not a screen reader. It is a complete rethinking of what an operating 
 ---
 
 ## How It Works
+┌──────────────────────────────────────────┐
+│ USER SPEAKS │
+│ "Find the tax PDF from yesterday" │
+└────────────────┬─────────────────────────┘
+▼
+┌──────────────────────────────────────────┐
+│ SPEECH-TO-TEXT (Whisper) │
+│ Local, offline, real-time │
+└────────────────┬─────────────────────────┘
+▼
+┌──────────────────────────────────────────┐
+│ AI ORCHESTRATOR (Ollama) │
+│ Intent parsing → action planning │
+└────────────────┬─────────────────────────┘
+▼
+┌──────────────────────────────────────────┐
+│ COMMAND EXECUTION │
+│ File search → open → summarize → read │
+└────────────────┬─────────────────────────┘
+▼
+┌──────────────────────────────────────────┐
+│ TEXT-TO-SPEECH (Piper) │
+│ "Found Tax_Return_2025.pdf. 4 pages. │
+│ Summary: Standard deduction filed..." │
+└──────────────────────────────────────────┘
