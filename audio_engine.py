@@ -51,6 +51,8 @@ class PiperTTS:
         if not text or not text.strip():
             return
 
+        print(f"\n[TTS Spoken Summary]: {text}\n", flush=True)
+
         if interrupt:
             self.stop()
 

@@ -286,20 +286,41 @@ def run_artome():
     play_earcon("success")
     tts.speak("Artome desktop environment ready with TTS barge-in and AT-SPI2 screen reader.")
 
+    fallback_mode = False
     while True:
         try:
-            # Pass tts engine into listener for continuous Barge-In interruption monitoring!
-            audio_data = listener.listen(max_duration_sec=12, tts_engine=tts)
-            if audio_data is None:
-                continue
+            if not fallback_mode:
+                try:
+                    # Pass tts engine into listener for continuous Barge-In interruption monitoring!
+                    audio_data = listener.listen(max_duration_sec=12, tts_engine=tts)
+                    if audio_data is None:
+                        continue
 
-            segments, _ = whisper_model.transcribe(audio_data, beam_size=5)
-            raw_user_text = " ".join([seg.text for seg in segments]).strip()
+                    segments, _ = whisper_model.transcribe(audio_data, beam_size=5)
+                    raw_user_text = " ".join([seg.text for seg in segments]).strip()
+                except Exception as e:
+                    print(f"ALSA/Sound device initialization failed: {e}")
+                    print("Switching to interactive Console Fallback Mode...")
+                    fallback_mode = True
+                    continue
+            else:
+                try:
+                    print(f"\n[{current_mode}] Enter command (or 'exit' to quit): ", end="", flush=True)
+                    raw_user_text = sys.stdin.readline().strip()
+                except KeyboardInterrupt:
+                    break
+                if not raw_user_text:
+                    continue
 
             if not raw_user_text:
                 continue
 
-            is_activated, active_command = wakeword.check_wake_word(raw_user_text)
+            # In console fallback mode, bypass wake word checking to allow direct command input
+            if fallback_mode:
+                active_command = raw_user_text
+                is_activated = True
+            else:
+                is_activated, active_command = wakeword.check_wake_word(raw_user_text)
 
             if not is_activated:
                 continue
@@ -310,7 +331,7 @@ def run_artome():
                 tts.speak("Yes?")
                 continue
 
-            print(f"\n[{current_mode}] WAKE WORD ACTIVATED. Command: {active_command}")
+            print(f"\n[{current_mode}] COMMAND: {active_command}")
 
             if any(word in active_command.lower() for word in ["exit", "quit", "shutdown", "stop"]):
                 play_earcon("success")
