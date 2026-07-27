@@ -1,0 +1,122 @@
+syntax = "proto3";
+
+package aetherfs;
+
+// The main conversational and control service for the AetherFS Engine.
+service AetherEngine {
+    // Real-time conversational search. Allows the voice interface client to stream
+    // either audio bytes or text query tokens and receive a stream of semantic/lexical
+    // results along with conversational spoken summaries and anchors.
+    rpc LiveVoiceSearch(stream VoiceSearchRequest) returns (stream VoiceSearchResponse);
+
+    // Forces a manual indexing/re-scan of a specific directory tree.
+    rpc IndexDirectory(IndexRequest) returns (IndexResponse);
+
+    // Queries the deduplication engine for all known duplicate groups or pairs.
+    rpc GetDuplicates(DuplicateRequest) returns (DuplicateResponse);
+}
+
+// Request stream for live voice search.
+message VoiceSearchRequest {
+    string session_id = 1;
+    
+    // The client can stream raw PCM audio (e.g. 16kHz 16-bit mono) or pre-transcribed text.
+    oneof input {
+        bytes audio_chunk = 2;
+        string text_query = 3;
+    }
+
+    // Optional constraint to search only within a specific folder.
+    string path_scope = 4;
+}
+
+// Response stream for live voice search.
+message VoiceSearchResponse {
+    string session_id = 1;
+    
+    // Real-time voice feedback status.
+    enum SearchStatus {
+        PROCESSING = 0;
+        SPEAKING = 1;
+        COMPLETED = 2;
+        ERROR = 3;
+    }
+    SearchStatus status = 2;
+    
+    // The engine's transcription of any streamed audio.
+    string partial_transcription = 3;
+
+    // A synthesis-ready conversational spoken summary of the search results,
+    // e.g. "I found three PDF documents created yesterday under your Documents folder."
+    string spoken_summary = 4;
+
+    // The ranked file matches.
+    repeated FileMatch results = 5;
+
+    // Any error messages.
+    string error_message = 6;
+}
+
+// Search result details.
+message FileMatch {
+    string path = 1;
+    string filename = 2;
+    int64 size_bytes = 3;
+    
+    // e.g., "document", "image", "audio", "code", "unknown"
+    string classified_type = 4;
+    
+    // FTS5 lexical score or Qdrant vector similarity score.
+    float score = 5;
+
+    // Unique synthesized description specifically formulated for a blind user.
+    // e.g., "Invoice from Acme, last modified Tuesday evening during your active hours."
+    ConversationalAnchor conversational_anchor = 6;
+
+    // Flag indicating if this file has duplicates in the system.
+    bool has_duplicates = 7;
+}
+
+// Synthesized voice metadata to help a blind user understand a file's context.
+message ConversationalAnchor {
+    // A natural spoken description of the file.
+    string spoken_summary = 1;
+
+    // Temporal context relative to the user, e.g., "Created last week when you were working on the budget."
+    string temporal_context = 2;
+
+    // The physical location/drive representation, e.g., "stored on External Drive Backups".
+    string location_context = 3;
+}
+
+// Request to scan a directory.
+message IndexRequest {
+    string directory_path = 1;
+    bool recursive = 2;
+}
+
+// Response after initiating or completing directory scan.
+message IndexResponse {
+    bool success = 1;
+    int64 files_indexed = 2;
+    string message = 3;
+}
+
+// Request to fetch duplicate files.
+message DuplicateRequest {
+    // If provided, only lists duplicates under this path.
+    string path_scope = 1;
+}
+
+// Response containing grouped duplicate files.
+message DuplicateResponse {
+    repeated DuplicateGroup groups = 1;
+}
+
+// A list of files that are exact binary duplicates.
+message DuplicateGroup {
+    string canonical_path = 1; // The chosen primary or first-seen path.
+    int64 file_size_bytes = 2;
+    string blake3_hash = 3;
+    repeated string duplicate_paths = 4;
+}

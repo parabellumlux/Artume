@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "aetherfs-proto",
+    "aetherfs-core",
+    "aetherfs-cli"
+]
+resolver = "2"
