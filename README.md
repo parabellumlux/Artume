@@ -78,7 +78,7 @@ flowchart TD
  │                   │                   │                   │                   │
  ▼                   ▼                   ▼                   ▼                   ▼
 🌐 Audio Browser    📧 Audio Mail       💻 Audio IDE        📁 File Manager     📝 Document Writer
-(DuckDuckGo/DOM)   (IMAP/SMTP)         (AST Code Tree)     (Voice Tree)        (PDF/DOCX/MD/TXT)
+(DuckDuckGo/DOM)   (IMAP/SMTP)         (AST Code Tree)     (AetherFS)        (PDF/DOCX/MD/TXT)
  │                   │                   │                   │                   │
  ├───────────────────┼───────────────────┼───────────────────┼───────────────────┤
  ▼                   ▼                   ▼                   ▼                   ▼
@@ -89,25 +89,7 @@ flowchart TD
 ---
 
 ## 📊 Current Project Status
-
-| Module | File | Implementation Status | Features |
-| :--- | :--- | :--- | :--- |
-| **OS Core Daemon** | [`artome_core.py`](artome_core.py) | ✅ Fully Integrated | Multi-mode event loop, mode routing, earcons |
-| **Audio Engine** | [`audio_engine.py`](audio_engine.py) | ✅ Fully Integrated | Piper TTS, continuous dynamic VAD, **Barge-In speech interruption** |
-| **Earcons Engine** | [`earcons.py`](earcons.py) | ✅ Fully Integrated | Chimes for listening, thinking, success, error |
-| **Wake-Word Detector**| [`wakeword_engine.py`](wakeword_engine.py) | ✅ Fully Integrated | Hands-free detection (*"Hey Artume"*, *"Computer"*, *"Hey R2"*) |
-| **AT-SPI2 Screen Reader**| [`screen_reader.py`](screen_reader.py) | ✅ Fully Integrated | Linux `at-spi2-core` accessibility tree inspector |
-| **AI Intent Router** | [`intent_router.py`](intent_router.py) | ✅ Fully Integrated | Ollama JSON structured intent schemas & `COMMAND:SCREEN_SUMMARY` |
-| **Audio Web Browser** | [`browser_engine.py`](browser_engine.py) | ✅ Fully Integrated | DuckDuckGo audio web search, DOM article reading, links/headings |
-| **Audio Email Client**| [`mail_engine.py`](mail_engine.py) | ✅ Fully Integrated | IMAP unread mail reader, voice dictation, SMTP sender |
-| **Audio AI IDE** | [`ide_engine.py`](ide_engine.py) | ✅ Fully Integrated | Python AST code symbol navigator, function reader, traceback summarizer |
-| **Audio File Manager**| [`file_browser_engine.py`](file_browser_engine.py) | ✅ Fully Integrated | Conversational directory tree navigator, accelerated by AetherFS Rust background search & deduplication |
-| **Document Writer** | [`doc_writer_engine.py`](doc_writer_engine.py) | ✅ Fully Integrated | Voice authoring, multi-format export (**PDF, Word DOCX, Markdown, TXT, HTML**), Dropbox sync |
-| **EBook Reader** | [`ebook_engine.py`](ebook_engine.py) | ✅ Fully Integrated | EPUB & PDF audio reader, TOC chapter navigation, audio bookmarks, search |
-| **System Settings** | [`system_settings_engine.py`](system_settings_engine.py) | ✅ Fully Integrated | Master volume control, battery % check, WiFi status, audio timers |
-| **Command Navigator**| [`command_navigator.py`](command_navigator.py) | ✅ Fully Integrated | Context-aware audio help & 8-mode interactive audio OS menu |
-
----
+Everytging is a prototype -Your welcome to use the code .. but Its in early stage development currently.push
 
 ## 📁 AetherFS Engine Integration (Rust Add-on)
 
