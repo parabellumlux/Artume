@@ -1,1 +1,13 @@
 /target
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+piper_linux_x86_64.tar.gz
+credentials
+credentials.md
+.env
+.env.*
+*.env
