@@ -205,23 +205,26 @@ def execute_action(intent, user_speech=""):
 
         # Audio File Browser Handlers
         if current_mode == "FILES" or action == "file_action":
-            if "where" in target_lower or "location" in target_lower:
-                tts.speak(file_browser.get_location_audio())
-            elif "list" in target_lower or "show" in target_lower:
-                tts.speak(file_browser.list_contents_audio())
-            elif "read" in target_lower or "view" in target_lower:
-                fname = target.replace("read file", "").replace("read", "").strip()
-                tts.speak(file_browser.read_file_audio(fname))
-            elif "search" in target_lower or "find" in target_lower:
-                query = target.replace("search for", "").replace("search", "").strip()
-                tts.speak(file_browser.search_files_audio(query))
-            elif "duplicate" in target_lower or "dups" in target_lower:
+            low_user_speech = user_speech.lower() if user_speech else ""
+            
+            # Robust voice fallback overrides
+            if "search" in low_user_speech or "find" in low_user_speech:
+                q = low_user_speech.replace("search for", "").replace("search file", "").replace("search", "").replace("find file", "").replace("find", "").strip()
+                tts.speak(file_browser.search_files_audio(q))
+            elif "duplicate" in low_user_speech or "dups" in low_user_speech:
                 tts.speak(file_browser.get_duplicates_audio())
-            elif "index" in target_lower or "scan" in target_lower:
-                folder = target.replace("index", "").replace("scan", "").strip() or file_browser.cwd
+            elif "index" in low_user_speech or "scan" in low_user_speech:
+                folder = low_user_speech.replace("index folder", "").replace("index directory", "").replace("index", "").replace("scan folder", "").replace("scan directory", "").replace("scan", "").strip() or file_browser.cwd
                 tts.speak(file_browser.index_directory_audio(folder))
-            elif "cd" in target_lower or "go to" in target_lower or "enter" in target_lower:
-                folder = target.replace("go to", "").replace("enter", "").replace("cd", "").strip()
+            elif "where" in target_lower or "location" in target_lower or "where am i" in low_user_speech:
+                tts.speak(file_browser.get_location_audio())
+            elif "list" in target_lower or "show" in target_lower or "list" in low_user_speech:
+                tts.speak(file_browser.list_contents_audio())
+            elif "read" in target_lower or "view" in target_lower or "read file" in low_user_speech:
+                fname = target.replace("read file", "").replace("read", "").strip() if target else low_user_speech.replace("read file", "").replace("read", "").strip()
+                tts.speak(file_browser.read_file_audio(fname))
+            elif "cd" in target_lower or "go to" in target_lower or "enter" in target_lower or any(w in low_user_speech for w in ["go to", "enter", "cd"]):
+                folder = target.replace("go to", "").replace("enter", "").replace("cd", "").strip() if target else low_user_speech.replace("go to", "").replace("enter", "").replace("cd", "").strip()
                 tts.speak(file_browser.change_dir(folder))
             else:
                 tts.speak(file_browser.list_contents_audio())
