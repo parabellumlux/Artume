@@ -83,8 +83,53 @@ class AudioFileBrowser:
         except Exception as e:
             return f"Error reading file {filename}: {str(e)[:50]}"
 
+    def _get_cli_path(self):
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        path = os.path.join(base_dir, "target", "debug", "aetherfs-cli")
+        if os.path.exists(path):
+            return path
+        return "aetherfs-cli"
+
     def search_files_audio(self, query):
-        """Search for files by pattern or query string."""
+        """Search for files using semantic AetherFS daemon or fall back to local walk."""
+        socket_path = "/tmp/aetherfs.sock"
+        cli_path = self._get_cli_path()
+        
+        if os.path.exists(socket_path) and (cli_path != "aetherfs-cli" or shutil.which("aetherfs-cli")):
+            import subprocess
+            try:
+                result = subprocess.run(
+                    [cli_path, "search", query],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                if result.returncode == 0:
+                    output = result.stdout
+                    lines = output.split('\n')
+                    matches_section = False
+                    matches = []
+                    for line in lines:
+                        if "Matching Files Found:" in line:
+                            matches_section = True
+                            continue
+                        if matches_section:
+                            line_stripped = line.strip()
+                            if line_stripped.startswith("Path:"):
+                                path = line_stripped.replace("Path:", "").strip()
+                                if path.startswith(self.cwd):
+                                    rel = os.path.relpath(path, self.cwd)
+                                    matches.append(rel)
+                                else:
+                                    matches.append(os.path.basename(path))
+                    if matches:
+                        speech = f"AetherFS background engine found {len(matches)} matching files. "
+                        speech += ", ".join(matches[:5])
+                        return speech
+            except Exception:
+                pass
+
+        # Fallback local walk search
         matches = []
         for root, dirs, files in os.walk(self.cwd):
             for file in files:
@@ -100,6 +145,76 @@ class AudioFileBrowser:
         speech = f"Found {len(matches)} matching files. "
         speech += ", ".join(matches[:5])
         return speech
+
+    def get_duplicates_audio(self):
+        """Query the AetherFS deduplication engine for duplicate groups."""
+        socket_path = "/tmp/aetherfs.sock"
+        cli_path = self._get_cli_path()
+        
+        if not os.path.exists(socket_path):
+            return "AetherFS background daemon is not running. Please start the core service to check for duplicates."
+            
+        if cli_path == "aetherfs-cli" and not shutil.which("aetherfs-cli"):
+            return "AetherFS CLI utility not found. Please compile the workspace."
+
+        import subprocess
+        try:
+            result = subprocess.run(
+                [cli_path, "dups"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode == 0:
+                output = result.stdout.strip()
+                if "No duplicate files found." in output:
+                    return "No duplicate files found in the system."
+                
+                lines = output.split('\n')
+                cleaned_lines = []
+                for line in lines:
+                    line_stripped = line.strip()
+                    if line_stripped.startswith("Group ") or line_stripped.startswith("Canonical Path:") or line_stripped.startswith("Duplicate Copies:"):
+                        cleaned_lines.append(line_stripped)
+                    elif line_stripped.startswith("- "):
+                        cleaned_lines.append("duplicate copy: " + line_stripped[2:])
+                
+                if cleaned_lines:
+                    summary = ". ".join(cleaned_lines[:15])
+                    return f"Deduplication registry: {summary}"
+                return output
+            return "Failed to query duplicates registry from background daemon."
+        except Exception as e:
+            return f"Error querying duplicates: {str(e)[:50]}"
+
+    def index_directory_audio(self, path):
+        """Request the background daemon to index a directory."""
+        target_path = os.path.abspath(os.path.expanduser(path))
+        if not os.path.exists(target_path):
+            return f"Directory {path} does not exist."
+
+        socket_path = "/tmp/aetherfs.sock"
+        cli_path = self._get_cli_path()
+        
+        if not os.path.exists(socket_path):
+            return "AetherFS background daemon is not running. Cannot index directory."
+
+        import subprocess
+        try:
+            result = subprocess.run(
+                [cli_path, "index", target_path],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode == 0:
+                output = result.stdout.strip()
+                if "Success" in output:
+                    return f"Successfully queued indexing for {os.path.basename(target_path)}."
+                return output
+            return f"Failed to request indexing: {result.stderr.strip()[:60]}"
+        except Exception as e:
+            return f"Error requesting indexing: {str(e)[:50]}"
 
     def create_folder(self, folder_name):
         """Create a new folder in current directory."""

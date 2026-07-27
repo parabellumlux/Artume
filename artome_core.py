@@ -215,6 +215,11 @@ def execute_action(intent, user_speech=""):
             elif "search" in target_lower or "find" in target_lower:
                 query = target.replace("search for", "").replace("search", "").strip()
                 tts.speak(file_browser.search_files_audio(query))
+            elif "duplicate" in target_lower or "dups" in target_lower:
+                tts.speak(file_browser.get_duplicates_audio())
+            elif "index" in target_lower or "scan" in target_lower:
+                folder = target.replace("index", "").replace("scan", "").strip() or file_browser.cwd
+                tts.speak(file_browser.index_directory_audio(folder))
             elif "cd" in target_lower or "go to" in target_lower or "enter" in target_lower:
                 folder = target.replace("go to", "").replace("enter", "").replace("cd", "").strip()
                 tts.speak(file_browser.change_dir(folder))

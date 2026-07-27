@@ -101,11 +101,29 @@ flowchart TD
 | **Audio Web Browser** | [`browser_engine.py`](browser_engine.py) | ✅ Fully Integrated | DuckDuckGo audio web search, DOM article reading, links/headings |
 | **Audio Email Client**| [`mail_engine.py`](mail_engine.py) | ✅ Fully Integrated | IMAP unread mail reader, voice dictation, SMTP sender |
 | **Audio AI IDE** | [`ide_engine.py`](ide_engine.py) | ✅ Fully Integrated | Python AST code symbol navigator, function reader, traceback summarizer |
-| **Audio File Manager**| [`file_browser_engine.py`](file_browser_engine.py) | ✅ Fully Integrated | Conversational directory tree navigator, audio file previews & search |
+| **Audio File Manager**| [`file_browser_engine.py`](file_browser_engine.py) | ✅ Fully Integrated | Conversational directory tree navigator, accelerated by AetherFS Rust background search & deduplication |
 | **Document Writer** | [`doc_writer_engine.py`](doc_writer_engine.py) | ✅ Fully Integrated | Voice authoring, multi-format export (**PDF, Word DOCX, Markdown, TXT, HTML**), Dropbox sync |
 | **EBook Reader** | [`ebook_engine.py`](ebook_engine.py) | ✅ Fully Integrated | EPUB & PDF audio reader, TOC chapter navigation, audio bookmarks, search |
 | **System Settings** | [`system_settings_engine.py`](system_settings_engine.py) | ✅ Fully Integrated | Master volume control, battery % check, WiFi status, audio timers |
 | **Command Navigator**| [`command_navigator.py`](command_navigator.py) | ✅ Fully Integrated | Context-aware audio help & 8-mode interactive audio OS menu |
+
+---
+
+## 📁 AetherFS Engine Integration (Rust Add-on)
+
+Artume includes **AetherFS**, a high-performance background file search and indexing engine written in Rust. It functions as a local daemon executing vector embeddings, SQLite database lookups, and BLAKE3-based binary deduplication, allowing the audio interface to retrieve files instantly and detect duplicate copies to conserve disk space.
+
+### Key Capabilities of AetherFS:
+* **Background Daemon**: CPU-governed background file watcher monitoring the user directories.
+* **Vector Semantic Search**: Encodes filenames/context into a 384-dimensional space via an ONNX MiniLM model and upserts to a local Qdrant instance.
+* **BLAKE3 Deduplication**: Identifies exact binary duplicates using fast sparse and full hashing pipelines.
+* **Seamless IPC**: Connects via a low-overhead Unix Domain Socket (UDS) gRPC stream.
+
+### Running AetherFS Daemon:
+To start the Rust background daemon:
+```bash
+make run-core
+```
 
 ---
 
