@@ -2,6 +2,11 @@
 members = [
     "aetherfs-proto",
     "aetherfs-core",
-    "aetherfs-cli"
+    "aetherfs-cli",
+    "aether_audio",
+    "aether_attention",
+    "aether_browser",
+    "aether_buffer",
+    "aether_orchestrator",
 ]
 resolver = "2"
