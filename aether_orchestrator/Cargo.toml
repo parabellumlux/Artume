@@ -46,9 +46,9 @@ env_logger = "0.11"
 parking_lot = "0.12"
 chrono = "0.4"
 
-# Local LLM inference via llama.cpp (used by models.rs)
-llama-cpp-2 = { version = "0.1", default-features = false }
-encoding_rs = "0.8"
+# AetherOS crates
+aether-browser = { path = "../aether_browser" }
+aether-buffer = { path = "../aether_buffer" }
 
 [lib]
 name = "aether_orchestrator"

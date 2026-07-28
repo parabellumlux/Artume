@@ -5,13 +5,12 @@
 //!
 //! ```text
 //! User Input → [Ollama API] → Intent Classification (Nemotron-3 Nano on 1650S)
-//!   ├── Conversation → [Llama 3.1 8B on GTX 1080] → response
-//!   ├── EntityLookup → [NER via Ollama] → buffer lookup → response
-//!   ├── WebFetch     → [Browser engine] → [Llama 3.1 summary] → response
+//!   ├── Conversation → [Llama 3.1 8B on GTX 1080] → response (with history)
+//!   ├── EntityLookup → [aether_buffer NER + ring buffer] → entity value
+//!   ├── WebFetch     → [aether_browser HTTP + Readability] → [Llama 3.1 summary] → response
 //!   └── ExecuteAction → [system call] → confirm
 //! ```
 
-pub mod models;
 pub mod ollama;
 pub mod router;
 #[cfg(feature = "stt")]

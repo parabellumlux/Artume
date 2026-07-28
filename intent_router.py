@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""AI Intent Router for Artome DE with structured JSON output, screen summary, and context perception."""
+"""AI Intent Router for Artome DE — uses GPU-backed Ollama models.
+
+Tier 1: Llama 3.1 8B on GTX 1080 (GPU 0) — main reasoning/conversation
+Tier 2: Nemotron-3 Nano on GTX 1650S (GPU 1) — router/tool-caller/guardrails
+Tier 3: nomic-embed-text on CPU — embeddings
+"""
 
 import json
 import re
@@ -8,23 +13,30 @@ import subprocess
 from screen_reader import AtspiScreenReader
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
-MODEL_NAME = "tinyllama"
+ROUTER_MODEL = "nemotron-3-nano:4b"   # Tier 2 — GTX 1650S
+REASONING_MODEL = "llama3.1:8b"       # Tier 1 — GTX 1080
+EMBED_MODEL = "nomic-embed-text"      # Tier 3 — CPU
 
 screen_reader = AtspiScreenReader()
+
 
 def get_active_window():
     """Retrieve title of currently focused desktop window."""
     try:
-        res = subprocess.check_output(["xdotool", "getactivewindow", "getwindowname"],
-                                     stderr=subprocess.STDOUT, text=True)
+        res = subprocess.check_output(
+            ["xdotool", "getactivewindow", "getwindowname"],
+            stderr=subprocess.STDOUT, text=True,
+        )
         return res.strip()
     except Exception:
         return "Unknown Desktop Window"
+
 
 def ask_artome_ai(user_speech, mode="DESKTOP"):
     """Query AI with context and request JSON intent payload.
 
     Modes: DESKTOP, BROWSER, EMAIL, IDE, FILES, DOCS, SETTINGS, EBOOK, SCREEN_SUMMARY
+    Uses Nemotron-3 Nano on GTX 1650S for routing/classification.
     """
     window_title = get_active_window()
     low_speech = user_speech.lower().strip()
@@ -44,12 +56,12 @@ Spoken summary for blind user:"""
             res = requests.post(
                 OLLAMA_URL,
                 json={
-                    "model": MODEL_NAME,
+                    "model": REASONING_MODEL,
                     "prompt": summary_prompt,
                     "stream": False,
-                    "options": {"temperature": 0.3, "num_predict": 90}
+                    "options": {"temperature": 0.3, "num_predict": 90},
                 },
-                timeout=12
+                timeout=12,
             )
             ai_summary = res.json()["response"].strip()
             return {"action": "screen_summary", "speech": f"Screen summary: {ai_summary}", "target": "COMMAND:SCREEN_SUMMARY"}
@@ -92,12 +104,12 @@ Response JSON:"""
         res = requests.post(
             OLLAMA_URL,
             json={
-                "model": MODEL_NAME,
+                "model": ROUTER_MODEL,
                 "prompt": system_prompt,
                 "stream": False,
-                "options": {"temperature": 0.2, "num_predict": 120}
+                "options": {"temperature": 0.2, "num_predict": 120},
             },
-            timeout=12
+            timeout=12,
         )
         raw_text = res.json()["response"].strip()
 
@@ -117,6 +129,7 @@ Response JSON:"""
 
     except Exception as e:
         return {"action": "speak", "speech": f"Connection error: {str(e)[:40]}", "target": ""}
+
 
 # Alias ask_ai for compatibility
 ask_ai = ask_artome_ai

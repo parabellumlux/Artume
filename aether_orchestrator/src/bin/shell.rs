@@ -28,7 +28,9 @@ async fn main() -> anyhow::Result<()> {
     println!("  Conversation: Llama 3.1 8B on GTX 1080 (GPU 0)");
     println!("  Embeddings:   nomic-embed-text on CPU");
     println!();
-    println!("Type 'quit' or 'exit' to stop.");
+    println!("Subsystems:");
+    println!("  Web Fetch:    aether_browser (HTTP + Readability)");
+    println!("  Entity Lookup: aether_buffer (NER + ring buffer)");
     println!();
 
     let config = ConversationConfig {
@@ -38,6 +40,17 @@ async fn main() -> anyhow::Result<()> {
 
     let mut loop_ = ConversationLoop::new(config);
     loop_.load_all()?;
+
+    // Health check: verify Ollama is running.
+    print!("  Checking Ollama connection... ");
+    io::stdout().flush()?;
+    if loop_.check_ollama_health().await {
+        println!("✓ connected");
+    } else {
+        println!("✗ not reachable — will use template fallbacks");
+        println!("  Start Ollama with: ollama serve");
+    }
+    println!();
 
     if loop_.voice_enabled() {
         println!("Voice mode enabled (requires model files).");

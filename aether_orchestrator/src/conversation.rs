@@ -7,13 +7,14 @@
 //! This is the top-level orchestrator that makes AetherOS feel like
 //! a conversation rather than a menu system.
 
-use crate::models::{InferenceParams, ModelEngine, ModelKind};
 use crate::ollama::{OllamaClient, OllamaModel};
 use crate::router::{Intent, IntentRouter, RouterConfig};
 #[cfg(feature = "stt")]
 use crate::stt::{SttConfig, SttEngine};
 #[cfg(feature = "tts")]
 use crate::tts::{TtsConfig, TtsEngine};
+use aether_browser::{BrowserEngine, ReadabilityExtractor, ConversationalFormatter};
+use aether_buffer::{ContextResolver, TranscriptRingBuffer};
 use log::{debug, info, warn};
 use std::time::Instant;
 
@@ -43,10 +44,6 @@ pub struct Turn {
 /// Configuration for the conversation loop.
 #[derive(Debug, Clone)]
 pub struct ConversationConfig {
-    /// Path to the conversation model GGUF (SmolLM3 3B Q4_K_M).
-    pub conversation_model_path: String,
-    /// Path to the NER model GGUF (Qwen2.5-0.5B Q4_K_M).
-    pub ner_model_path: String,
     /// Router configuration.
     pub router: RouterConfig,
     /// STT configuration (only used with "stt" feature).
@@ -59,13 +56,13 @@ pub struct ConversationConfig {
     pub system_prompt: String,
     /// Whether to enable voice I/O (vs text-only for testing).
     pub voice_enabled: bool,
+    /// Maximum conversation history turns to include in context.
+    pub max_history_turns: usize,
 }
 
 impl Default for ConversationConfig {
     fn default() -> Self {
         Self {
-            conversation_model_path: "models/smollm3-3b-q4.gguf".to_string(),
-            ner_model_path: "models/qwen2.5-0.5b-q4.gguf".to_string(),
             router: RouterConfig::default(),
             #[cfg(feature = "stt")]
             stt: SttConfig::default(),
@@ -76,6 +73,7 @@ impl Default for ConversationConfig {
                            Use natural language. Be helpful, clear, and direct."
                 .to_string(),
             voice_enabled: false,
+            max_history_turns: 5,
         }
     }
 }
@@ -94,10 +92,10 @@ pub struct ConversationLoop {
     router: IntentRouter,
     /// Ollama client for GPU-backed inference.
     ollama: OllamaClient,
-    /// Conversation model (SmolLM3 3B — fallback when Ollama is unavailable).
-    conversation_model: ModelEngine,
-    /// NER model (Qwen2.5-0.5B).
-    ner_model: ModelEngine,
+    /// Browser engine for web fetching.
+    browser: BrowserEngine,
+    /// Transcript ring buffer for entity lookup.
+    transcript_buffer: TranscriptRingBuffer,
     /// STT engine (only available with "stt" feature).
     #[cfg(feature = "stt")]
     stt: SttEngine,
@@ -115,16 +113,19 @@ impl ConversationLoop {
     pub fn new(config: ConversationConfig) -> Self {
         let router = IntentRouter::new(config.router.clone());
         let ollama = OllamaClient::new(None);
-        let conversation_model =
-            ModelEngine::new(ModelKind::Conversation, &config.conversation_model_path);
-        let ner_model = ModelEngine::new(ModelKind::NER, &config.ner_model_path);
+        let browser = BrowserEngine::new().unwrap_or_else(|e| {
+            warn!("Failed to create browser engine: {e} — web fetch will be unavailable");
+            // Create a minimal placeholder — BrowserEngine::new() only fails on
+            // client builder error, which is rare. We still need the field.
+            BrowserEngine::new().expect("BrowserEngine creation failed")
+        });
 
         Self {
             config,
             router,
             ollama,
-            conversation_model,
-            ner_model,
+            browser,
+            transcript_buffer: TranscriptRingBuffer::new(),
             #[cfg(feature = "stt")]
             stt: SttEngine::new(config.stt.clone()),
             #[cfg(feature = "tts")]
@@ -134,27 +135,27 @@ impl ConversationLoop {
         }
     }
 
+    /// Check if Ollama is reachable.
+    pub async fn check_ollama_health(&self) -> bool {
+        match self.ollama.health().await {
+            Ok(true) => {
+                info!("Ollama health check: OK");
+                true
+            }
+            Ok(false) => {
+                warn!("Ollama health check: server responded but unexpected status");
+                false
+            }
+            Err(e) => {
+                warn!("Ollama health check: FAILED — {e}");
+                false
+            }
+        }
+    }
+
     /// Load all models.
     pub fn load_all(&mut self) -> anyhow::Result<()> {
         info!("ConversationLoop: loading all models...");
-
-        // Conversation model is optional — without it we fall back to
-        // template responses.
-        self.conversation_model
-            .load()
-            .map_err(|e| {
-                warn!("Conversation model load failed (non-fatal): {e}");
-                e
-            })
-            .ok();
-
-        self.ner_model
-            .load()
-            .map_err(|e| {
-                warn!("NER model load failed (non-fatal): {e}");
-                e
-            })
-            .ok();
 
         #[cfg(feature = "stt")]
         self.stt
@@ -189,6 +190,9 @@ impl ConversationLoop {
         let start = Instant::now();
         let timestamp = chrono::Utc::now();
 
+        // Push user text into transcript buffer for entity lookup.
+        self.transcript_buffer.push(user_text, aether_buffer::TranscriptSource::User);
+
         // Step 1: Classify intent.
         let intent = self.router.classify(user_text).await;
 
@@ -196,11 +200,14 @@ impl ConversationLoop {
         let response = match intent {
             Intent::Conversation => self.handle_conversation(user_text).await,
             Intent::EntityLookup => self.handle_entity_lookup(user_text),
-            Intent::WebFetch => self.handle_web_fetch(user_text),
+            Intent::WebFetch => self.handle_web_fetch(user_text).await,
             Intent::ExecuteAction => self.handle_execute_action(user_text),
             Intent::SystemCommand => self.handle_system_command(user_text),
             Intent::Unknown => self.handle_unknown(user_text),
         };
+
+        // Push system response into transcript buffer.
+        self.transcript_buffer.push(&response, aether_buffer::TranscriptSource::System);
 
         let turn_ms = start.elapsed().as_millis() as u64;
 
@@ -245,60 +252,125 @@ impl ConversationLoop {
     // --- Intent handlers ---
 
     async fn handle_conversation(&mut self, user_text: &str) -> String {
+        // Build message history for context.
+        let mut messages: Vec<(&str, &str)> = Vec::new();
+
+        // System prompt.
+        messages.push(("system", &self.config.system_prompt));
+
+        // Recent history (sliding window).
+        let start_idx = self
+            .history
+            .len()
+            .saturating_sub(self.config.max_history_turns);
+        for turn in &self.history[start_idx..] {
+            messages.push(("user", &turn.user_text));
+            messages.push(("assistant", &turn.response));
+        }
+
+        // Current user input.
+        messages.push(("user", user_text));
+
         // Try Ollama on GTX 1080 first (Tier 1).
         match self
             .ollama
-            .chat(
-                &OllamaModel::REASONING,
-                user_text,
-                Some(&self.config.system_prompt),
-                0.7,
-                512,
-            )
+            .chat_with_messages(&OllamaModel::REASONING, &messages, 0.7, 512)
             .await
         {
             Ok(response) => response,
             Err(e) => {
-                warn!("Ollama[1080] failed: {e} — falling back to local model");
-                // Fallback to local llama.cpp model.
-                if self.conversation_model.is_loaded() {
-                    let params = InferenceParams {
-                        system_prompt: Some(self.config.system_prompt.clone()),
-                        ..InferenceParams::creative()
-                    };
-                    match self.conversation_model.generate(user_text, &params) {
-                        Ok(result) => result.text,
-                        Err(e2) => format!("I had trouble thinking about that: {e2}"),
-                    }
-                } else {
-                    self.template_conversation(user_text)
-                }
+                warn!("Ollama[1080] failed: {e} — using template fallback");
+                self.template_conversation(user_text)
             }
         }
     }
 
     fn handle_entity_lookup(&mut self, user_text: &str) -> String {
-        if self.ner_model.is_loaded() {
-            match self.ner_model.generate(user_text, &InferenceParams::greedy()) {
-                Ok(result) => {
-                    format!("I found: {}", result.text)
-                }
-                Err(e) => format!("Could not extract entities: {e}"),
+        let resolver = ContextResolver::new(&self.transcript_buffer);
+        match resolver.resolve_reference(user_text) {
+            Some(entity) => {
+                info!(
+                    "EntityLookup: resolved '{}' → {}: {}",
+                    user_text, entity.entity_type, entity.value
+                );
+                format!("I found {}: {}.", entity.entity_type, entity.value)
             }
-        } else {
-            "I can look up tracking numbers, phone numbers, and addresses from our conversation. \
-             Just tell me what you need to save or copy."
-                .to_string()
+            None => {
+                // Fallback: search the buffer for any recent entities.
+                let all = self.transcript_buffer.all_entities();
+                if all.is_empty() {
+                    "I don't see any recent information I can look up. Try saying something like 'Copy that tracking number' after I've mentioned one."
+                        .to_string()
+                } else {
+                    let types: std::collections::HashSet<&str> =
+                        all.iter().map(|e| e.entity_type.as_str()).collect();
+                    let mut type_list: Vec<&str> = types.into_iter().collect();
+                    type_list.sort();
+                    format!(
+                        "I found {} saved entr{}. Available types: {}. Try being more specific.",
+                        all.len(),
+                        if all.len() == 1 { "y" } else { "ies" },
+                        type_list.join(", ")
+                    )
+                }
+            }
         }
     }
 
-    fn handle_web_fetch(&mut self, user_text: &str) -> String {
-        // Extract a URL from the text if present.
+    async fn handle_web_fetch(&mut self, user_text: &str) -> String {
+        // Extract a URL from the text.
         let url = self.extract_url(user_text);
+
         match url {
-            Some(u) => format!("I'll fetch that page for you: {u}"),
-            None => "I can read web pages for you. Just give me a URL or say 'read me the article'."
-                .to_string(),
+            Some(u) => {
+                info!("WebFetch: fetching {u}");
+                match self.browser.fetch(&u).await {
+                    Ok(result) => {
+                        // Extract readable content.
+                        let content = ReadabilityExtractor::extract(&result.html);
+                        let formatted = ConversationalFormatter::format(&content);
+
+                        // If we have Ollama, summarize the content.
+                        if formatted.len() > 200 {
+                            let summary_prompt = format!(
+                                "Summarize this web page content in 2-3 concise sentences:\n\nTitle: {}\n\n{}",
+                                content.title, formatted
+                            );
+                            match self
+                                .ollama
+                                .chat(&OllamaModel::REASONING, &summary_prompt, None, 0.3, 256)
+                                .await
+                            {
+                                Ok(summary) => {
+                                    format!(
+                                        "Here's what I found on \"{}\": {}",
+                                        content.title, summary
+                                    )
+                                }
+                                Err(_) => {
+                                    // Fallback: return the formatted content directly.
+                                    let preview = if formatted.len() > 500 {
+                                        format!("{}... (content continues)", &formatted[..500])
+                                    } else {
+                                        formatted.clone()
+                                    };
+                                    format!("Here's what I found on \"{}\": {}", content.title, preview)
+                                }
+                            }
+                        } else {
+                            format!("Here's what I found on \"{}\": {}", content.title, formatted)
+                        }
+                    }
+                    Err(e) => {
+                        warn!("WebFetch: failed to fetch {u}: {e}");
+                        format!("I couldn't fetch that page: {e}")
+                    }
+                }
+            }
+            None => {
+                "I can read web pages for you. Just give me a URL or say 'read me the article'."
+                    .to_string()
+            }
         }
     }
 
@@ -396,9 +468,8 @@ mod tests {
     #[tokio::test]
     async fn test_process_conversation_turn() {
         let mut loop_ = ConversationLoop::new(ConversationConfig::default());
-        loop_.load_all().ok(); // models won't exist, but that's fine
+        loop_.load_all().ok();
         let turn = loop_.process_turn("Hello, how are you?").await.unwrap();
-        // Without the router model loaded, it falls back to Unknown
         assert!(!turn.response.is_empty());
     }
 
@@ -407,8 +478,6 @@ mod tests {
         let mut loop_ = ConversationLoop::new(ConversationConfig::default());
         loop_.load_all().ok();
         let turn = loop_.process_turn("Copy that tracking number").await.unwrap();
-        // Without the router model loaded, it falls back to Conversation
-        // (the simulated router only works when the model is "loaded")
         assert!(!turn.response.is_empty());
     }
 
@@ -417,7 +486,6 @@ mod tests {
         let mut loop_ = ConversationLoop::new(ConversationConfig::default());
         loop_.load_all().ok();
         let turn = loop_.process_turn("Read me https://example.com").await.unwrap();
-        // Without the router model loaded, it falls back to Conversation
         assert!(!turn.response.is_empty());
     }
 

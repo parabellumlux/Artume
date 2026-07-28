@@ -127,6 +127,87 @@ impl OllamaClient {
         Ok(resp.status().is_success())
     }
 
+    /// Generate a chat completion with full message history.
+    ///
+    /// `messages` is a list of `(role, content)` pairs where role is
+    /// "system", "user", or "assistant". This enables multi-turn
+    /// conversation with context.
+    pub async fn chat_with_messages(
+        &self,
+        model: &OllamaModel,
+        messages: &[(&str, &str)],
+        temperature: f32,
+        max_tokens: i32,
+    ) -> Result<String> {
+        let start = Instant::now();
+
+        let msgs: Vec<Message> = messages
+            .iter()
+            .map(|(role, content)| Message {
+                role: role.to_string(),
+                content: content.to_string(),
+            })
+            .collect();
+
+        let request = ChatRequest {
+            model: model.name.to_string(),
+            messages: msgs,
+            stream: false,
+            options: Some(Options {
+                num_predict: Some(max_tokens),
+                temperature: Some(temperature),
+                top_p: Some(0.9),
+            }),
+        };
+
+        debug!(
+            "Ollama[{}] on GPU {}: sending chat with {} messages ({} tokens max, temp={})",
+            model.label,
+            model.gpu,
+            messages.len(),
+            max_tokens,
+            temperature
+        );
+
+        let resp = self
+            .client
+            .post(format!("{}/api/chat", self.base_url))
+            .json(&request)
+            .send()
+            .await
+            .with_context(|| format!("Ollama chat request failed for {}", model.name))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Ollama returned HTTP {}: {}", status, body);
+        }
+
+        let chat_resp: ChatResponse = resp
+            .json()
+            .await
+            .with_context(|| "Failed to parse Ollama response")?;
+
+        let elapsed = start.elapsed();
+        let tokens = chat_resp.eval_count.unwrap_or(0);
+        let tok_s = if elapsed.as_secs_f32() > 0.0 {
+            tokens as f32 / elapsed.as_secs_f32()
+        } else {
+            0.0
+        };
+
+        info!(
+            "Ollama[{}] on GPU {}: {} tokens in {:.0}ms ({:.1} tok/s)",
+            model.label,
+            model.gpu,
+            tokens,
+            elapsed.as_millis(),
+            tok_s
+        );
+
+        Ok(chat_resp.message.content)
+    }
+
     /// Generate a chat completion on the specified model/GPU.
     ///
     /// `model` defines which Ollama model and which GPU to use.
