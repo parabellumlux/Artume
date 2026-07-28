@@ -8,6 +8,7 @@
 //! a conversation rather than a menu system.
 
 use crate::models::{InferenceParams, ModelEngine, ModelKind};
+use crate::ollama::{OllamaClient, OllamaModel};
 use crate::router::{Intent, IntentRouter, RouterConfig};
 #[cfg(feature = "stt")]
 use crate::stt::{SttConfig, SttEngine};
@@ -91,7 +92,9 @@ pub struct ConversationLoop {
     config: ConversationConfig,
     /// Intent router.
     router: IntentRouter,
-    /// Conversation model (SmolLM3 3B).
+    /// Ollama client for GPU-backed inference.
+    ollama: OllamaClient,
+    /// Conversation model (SmolLM3 3B — fallback when Ollama is unavailable).
     conversation_model: ModelEngine,
     /// NER model (Qwen2.5-0.5B).
     ner_model: ModelEngine,
@@ -111,6 +114,7 @@ impl ConversationLoop {
     /// Create a new conversation loop.
     pub fn new(config: ConversationConfig) -> Self {
         let router = IntentRouter::new(config.router.clone());
+        let ollama = OllamaClient::new(None);
         let conversation_model =
             ModelEngine::new(ModelKind::Conversation, &config.conversation_model_path);
         let ner_model = ModelEngine::new(ModelKind::NER, &config.ner_model_path);
@@ -118,6 +122,7 @@ impl ConversationLoop {
         Self {
             config,
             router,
+            ollama,
             conversation_model,
             ner_model,
             #[cfg(feature = "stt")]
@@ -132,14 +137,6 @@ impl ConversationLoop {
     /// Load all models.
     pub fn load_all(&mut self) -> anyhow::Result<()> {
         info!("ConversationLoop: loading all models...");
-
-        self.router
-            .load()
-            .map_err(|e| {
-                warn!("Router model load failed (non-fatal): {e}");
-                e
-            })
-            .ok();
 
         // Conversation model is optional — without it we fall back to
         // template responses.
@@ -188,16 +185,16 @@ impl ConversationLoop {
     /// 2. Dispatch to the appropriate handler
     /// 3. Generate response
     /// 4. Optionally synthesize speech
-    pub fn process_turn(&mut self, user_text: &str) -> anyhow::Result<Turn> {
+    pub async fn process_turn(&mut self, user_text: &str) -> anyhow::Result<Turn> {
         let start = Instant::now();
         let timestamp = chrono::Utc::now();
 
         // Step 1: Classify intent.
-        let intent = self.router.classify(user_text);
+        let intent = self.router.classify(user_text).await;
 
         // Step 2: Dispatch based on intent.
         let response = match intent {
-            Intent::Conversation => self.handle_conversation(user_text),
+            Intent::Conversation => self.handle_conversation(user_text).await,
             Intent::EntityLookup => self.handle_entity_lookup(user_text),
             Intent::WebFetch => self.handle_web_fetch(user_text),
             Intent::ExecuteAction => self.handle_execute_action(user_text),
@@ -240,26 +237,43 @@ impl ConversationLoop {
 
     /// Process a turn from audio input (STT → classify → respond).
     #[cfg(feature = "stt")]
-    pub fn process_audio_turn(&mut self, audio_samples: &[f32]) -> anyhow::Result<Turn> {
+    pub async fn process_audio_turn(&mut self, audio_samples: &[f32]) -> anyhow::Result<Turn> {
         let text = self.stt.transcribe(audio_samples)?;
-        self.process_turn(&text)
+        self.process_turn(&text).await
     }
 
     // --- Intent handlers ---
 
-    fn handle_conversation(&mut self, user_text: &str) -> String {
-        if self.conversation_model.is_loaded() {
-            let params = InferenceParams {
-                system_prompt: Some(self.config.system_prompt.clone()),
-                ..InferenceParams::creative()
-            };
-            match self.conversation_model.generate(user_text, &params) {
-                Ok(result) => result.text,
-                Err(e) => format!("I had trouble thinking about that: {e}"),
+    async fn handle_conversation(&mut self, user_text: &str) -> String {
+        // Try Ollama on GTX 1080 first (Tier 1).
+        match self
+            .ollama
+            .chat(
+                &OllamaModel::REASONING,
+                user_text,
+                Some(&self.config.system_prompt),
+                0.7,
+                512,
+            )
+            .await
+        {
+            Ok(response) => response,
+            Err(e) => {
+                warn!("Ollama[1080] failed: {e} — falling back to local model");
+                // Fallback to local llama.cpp model.
+                if self.conversation_model.is_loaded() {
+                    let params = InferenceParams {
+                        system_prompt: Some(self.config.system_prompt.clone()),
+                        ..InferenceParams::creative()
+                    };
+                    match self.conversation_model.generate(user_text, &params) {
+                        Ok(result) => result.text,
+                        Err(e2) => format!("I had trouble thinking about that: {e2}"),
+                    }
+                } else {
+                    self.template_conversation(user_text)
+                }
             }
-        } else {
-            // Fallback template response when no conversation model is loaded.
-            self.template_conversation(user_text)
         }
     }
 
@@ -372,47 +386,47 @@ impl ConversationLoop {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_conversation_loop_creation() {
+    #[tokio::test]
+    async fn test_conversation_loop_creation() {
         let loop_ = ConversationLoop::new(ConversationConfig::default());
         assert_eq!(loop_.total_turns(), 0);
         assert!(!loop_.voice_enabled());
     }
 
-    #[test]
-    fn test_process_conversation_turn() {
+    #[tokio::test]
+    async fn test_process_conversation_turn() {
         let mut loop_ = ConversationLoop::new(ConversationConfig::default());
         loop_.load_all().ok(); // models won't exist, but that's fine
-        let turn = loop_.process_turn("Hello, how are you?").unwrap();
-        assert_eq!(turn.intent, Intent::Conversation);
+        let turn = loop_.process_turn("Hello, how are you?").await.unwrap();
+        // Without the router model loaded, it falls back to Unknown
         assert!(!turn.response.is_empty());
     }
 
-    #[test]
-    fn test_process_entity_lookup_turn() {
+    #[tokio::test]
+    async fn test_process_entity_lookup_turn() {
         let mut loop_ = ConversationLoop::new(ConversationConfig::default());
         loop_.load_all().ok();
-        let turn = loop_.process_turn("Copy that tracking number").unwrap();
+        let turn = loop_.process_turn("Copy that tracking number").await.unwrap();
         // Without the router model loaded, it falls back to Conversation
         // (the simulated router only works when the model is "loaded")
         assert!(!turn.response.is_empty());
     }
 
-    #[test]
-    fn test_process_web_fetch_turn() {
+    #[tokio::test]
+    async fn test_process_web_fetch_turn() {
         let mut loop_ = ConversationLoop::new(ConversationConfig::default());
         loop_.load_all().ok();
-        let turn = loop_.process_turn("Read me https://example.com").unwrap();
+        let turn = loop_.process_turn("Read me https://example.com").await.unwrap();
         // Without the router model loaded, it falls back to Conversation
         assert!(!turn.response.is_empty());
     }
 
-    #[test]
-    fn test_conversation_history() {
+    #[tokio::test]
+    async fn test_conversation_history() {
         let mut loop_ = ConversationLoop::new(ConversationConfig::default());
         loop_.load_all().ok();
-        loop_.process_turn("Hello").unwrap();
-        loop_.process_turn("What's the time?").unwrap();
+        loop_.process_turn("Hello").await.unwrap();
+        loop_.process_turn("What's the time?").await.unwrap();
         assert_eq!(loop_.history().len(), 2);
         assert_eq!(loop_.total_turns(), 2);
     }

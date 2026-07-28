@@ -1,19 +1,18 @@
 //! AetherOS Conversational Orchestrator
 //!
-//! The central nervous system of AetherOS — takes the audio menu system
-//! and makes it conversational by routing natural-language input through
-//! a local CPU model ensemble:
+//! The central nervous system of AetherOS — routes natural-language input
+//! through the dual-GPU AI stack:
 //!
 //! ```text
-//! User Speech → [Whisper tiny] → Text
-//!   → [Qwen2.5-1.5B Router] → Intent Classification
-//!      ├── Conversation → [SmolLM3 3B] → response → [Kokoro TTS]
-//!      ├── EntityLookup → [NER model] → buffer lookup → response
-//!      ├── WebFetch     → [Browser engine] → [Gemma 3 2B summary] → TTS
-//!      └── ExecuteAction → [Intent model] → system call → confirm
+//! User Input → [Ollama API] → Intent Classification (Nemotron-3 Nano on 1650S)
+//!   ├── Conversation → [Llama 3.1 8B on GTX 1080] → response
+//!   ├── EntityLookup → [NER via Ollama] → buffer lookup → response
+//!   ├── WebFetch     → [Browser engine] → [Llama 3.1 summary] → response
+//!   └── ExecuteAction → [system call] → confirm
 //! ```
 
 pub mod models;
+pub mod ollama;
 pub mod router;
 #[cfg(feature = "stt")]
 pub mod stt;
@@ -21,7 +20,7 @@ pub mod stt;
 pub mod tts;
 pub mod conversation;
 
-pub use models::{ModelEngine, ModelKind, InferenceParams, GenerationResult};
+pub use ollama::{OllamaClient, OllamaModel};
 pub use router::{Intent, IntentRouter, RouterConfig};
 #[cfg(feature = "stt")]
 pub use stt::{SttEngine, SttConfig};

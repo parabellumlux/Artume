@@ -11,7 +11,8 @@
 use aether_orchestrator::{ConversationConfig, ConversationLoop};
 use std::io::{self, BufRead, Write};
 
-fn main() -> anyhow::Result<()> {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
         .format_timestamp_millis()
         .init();
@@ -19,17 +20,14 @@ fn main() -> anyhow::Result<()> {
     println!();
     println!("╔══════════════════════════════════════════════╗");
     println!("║        AetherOS Conversational Shell         ║");
-    println!("║     Local CPU Model Ensemble (text mode)    ║");
+    println!("║   Dual-GPU AI Pipeline (1080 + 1650S)       ║");
     println!("╚══════════════════════════════════════════════╝");
     println!();
-    println!("Models (place GGUF files at the paths below):");
-    println!("  Router:       models/qwen2.5-1.5b-instruct-q4.gguf");
-    println!("  Conversation: models/smollm3-3b-q4.gguf");
-    println!("  NER:          models/qwen2.5-0.5b-q4.gguf");
-    println!("  STT:          models/ggml-tiny.en.bin");
-    println!("  TTS:          models/Kokoro-82M/");
+    println!("GPU Pipeline:");
+    println!("  Router:       Nemotron-3 Nano on GTX 1650S (GPU 1)");
+    println!("  Conversation: Llama 3.1 8B on GTX 1080 (GPU 0)");
+    println!("  Embeddings:   nomic-embed-text on CPU");
     println!();
-    println!("Without model files, the system uses template fallbacks.");
     println!("Type 'quit' or 'exit' to stop.");
     println!();
 
@@ -66,7 +64,7 @@ fn main() -> anyhow::Result<()> {
             break;
         }
 
-        match loop_.process_turn(&line) {
+        match loop_.process_turn(&line).await {
             Ok(turn) => {
                 println!(
                     "Aether > [{}] {}",

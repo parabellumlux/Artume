@@ -2,20 +2,20 @@
 name = "aether-orchestrator"
 version = "0.1.0"
 edition = "2021"
-description = "AetherOS Conversational Orchestrator — local CPU model ensemble for STT, intent routing, LLM conversation, and TTS"
+description = "AetherOS Conversational Orchestrator — Ollama-backed AI pipeline with dual-GPU routing"
 
 [features]
-default = ["llm"]
-# LLM inference via llama.cpp (core — always on by default)
-llm = ["llama-cpp-2", "encoding_rs"]
-# Speech-to-text via whisper.cpp (optional — ggml conflict with llama)
+default = ["ollama"]
+# Ollama HTTP API backend (default — no native CUDA deps needed)
+ollama = []
+# Speech-to-text via whisper.cpp (optional)
 stt = ["whisper-rs"]
-# Text-to-speech via any-tts (optional — Candle-based, no ggml conflict)
+# Text-to-speech via any-tts (optional)
 tts = ["any-tts"]
 
 [dependencies]
-# LLM inference via llama.cpp (feature-gated)
-llama-cpp-2 = { version = "0.1", optional = true }
+# Ollama HTTP API client
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 
 # Speech-to-text via whisper.cpp (feature-gated)
 whisper-rs = { version = "0.16", optional = true }
@@ -45,7 +45,10 @@ env_logger = "0.11"
 # Utilities
 parking_lot = "0.12"
 chrono = "0.4"
-encoding_rs = { version = "0.8", optional = true }
+
+# Local LLM inference via llama.cpp (used by models.rs)
+llama-cpp-2 = { version = "0.1", default-features = false }
+encoding_rs = "0.8"
 
 [lib]
 name = "aether_orchestrator"

@@ -1,10 +1,10 @@
 //! AetherOS Intent Router
 //!
-//! Classifies user utterances into intents and dispatches to the
-//! appropriate sub-system. This is the key component that replaces
-//! the menu hierarchy with a single natural-language entry point.
+//! Classifies user utterances into intents using the Nemotron-3 Nano
+//! model on the GTX 1650S via Ollama. This replaces the menu hierarchy
+//! with a single natural-language entry point.
 
-use crate::models::{InferenceParams, ModelEngine, ModelKind, GenerationResult};
+use crate::ollama::OllamaClient;
 use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 
@@ -40,6 +40,18 @@ impl Intent {
             Self::Unknown => "unknown",
         }
     }
+
+    /// Parse a string from the model into an Intent.
+    pub fn from_label(s: &str) -> Self {
+        match s.trim().to_lowercase().as_str() {
+            "conversation" => Self::Conversation,
+            "entity_lookup" | "entitylookup" => Self::EntityLookup,
+            "web_fetch" | "webfetch" => Self::WebFetch,
+            "execute_action" | "executeaction" => Self::ExecuteAction,
+            "system_command" | "systemcommand" => Self::SystemCommand,
+            _ => Self::Unknown,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -49,19 +61,13 @@ impl Intent {
 /// Configuration for the intent router.
 #[derive(Debug, Clone)]
 pub struct RouterConfig {
-    /// Path to the router model GGUF file (Qwen2.5-1.5B-Instruct Q4_K_M).
-    pub model_path: String,
-    /// Confidence threshold for accepting a classification.
-    pub confidence_threshold: f32,
-    /// Fallback intent when confidence is low.
+    /// Fallback intent when classification fails.
     pub fallback_intent: Intent,
 }
 
 impl Default for RouterConfig {
     fn default() -> Self {
         Self {
-            model_path: "models/qwen2.5-1.5b-instruct-q4.gguf".to_string(),
-            confidence_threshold: 0.6,
             fallback_intent: Intent::Conversation,
         }
     }
@@ -73,11 +79,11 @@ impl Default for RouterConfig {
 
 /// Routes user utterances to the correct sub-system.
 ///
-/// Uses the router model (Qwen2.5-1.5B) to classify intent, then
-/// dispatches to the appropriate handler.
+/// Uses the Nemotron-3 Nano model on the GTX 1650S via Ollama to
+/// classify intent, then dispatches to the appropriate handler.
 pub struct IntentRouter {
-    /// The router model engine.
-    engine: ModelEngine,
+    /// Ollama client for model inference.
+    client: OllamaClient,
     /// Configuration.
     config: RouterConfig,
 }
@@ -85,62 +91,33 @@ pub struct IntentRouter {
 impl IntentRouter {
     /// Create a new intent router.
     pub fn new(config: RouterConfig) -> Self {
-        let engine = ModelEngine::new(ModelKind::Router, &config.model_path);
-        Self { engine, config }
+        Self {
+            client: OllamaClient::new(None),
+            config,
+        }
     }
 
-    /// Load the router model.
-    pub fn load(&mut self) -> anyhow::Result<()> {
-        self.engine.load()
+    /// Create with a custom Ollama client.
+    pub fn with_client(client: OllamaClient, config: RouterConfig) -> Self {
+        Self { client, config }
     }
 
     /// Classify a user utterance into an intent.
     ///
-    /// Uses the router model with greedy decoding for deterministic
-    /// classification.
-    pub fn classify(&mut self, utterance: &str) -> Intent {
-        // Build a classification prompt.
-        let prompt = format!(
-            "Classify the following user utterance into one of these intents:\n\
-             - Conversation: general chat, questions, small talk\n\
-             - EntityLookup: references to tracking numbers, phone numbers, addresses, emails\n\
-             - WebFetch: requests to read articles, browse websites, fetch URLs\n\
-             - ExecuteAction: requests to call, email, send, open apps\n\
-             - SystemCommand: volume, settings, help, system control\n\n\
-             Utterance: {}\n\nIntent:",
-            utterance
-        );
-
-        let result = match self.engine.generate(&prompt, &InferenceParams::greedy()) {
-            Ok(r) => r,
+    /// Uses the Nemotron-3 Nano model on the 1650S with greedy decoding
+    /// for deterministic classification.
+    pub async fn classify(&self, utterance: &str) -> Intent {
+        match self.client.classify_intent(utterance).await {
+            Ok(label) => {
+                let intent = Intent::from_label(&label);
+                debug!("IntentRouter: '{}' → {:?}", utterance, intent);
+                intent
+            }
             Err(e) => {
                 warn!("IntentRouter: classification failed: {e}");
-                return self.config.fallback_intent;
-            }
-        };
-
-        self.parse_intent(&result.text)
-    }
-
-    /// Parse the model output into an Intent.
-    fn parse_intent(&self, text: &str) -> Intent {
-        let trimmed = text.trim();
-        match trimmed {
-            s if s.eq_ignore_ascii_case("Conversation") => Intent::Conversation,
-            s if s.eq_ignore_ascii_case("EntityLookup") => Intent::EntityLookup,
-            s if s.eq_ignore_ascii_case("WebFetch") => Intent::WebFetch,
-            s if s.eq_ignore_ascii_case("ExecuteAction") => Intent::ExecuteAction,
-            s if s.eq_ignore_ascii_case("SystemCommand") => Intent::SystemCommand,
-            _ => {
-                debug!("IntentRouter: unknown intent '{trimmed}', falling back");
                 self.config.fallback_intent
             }
         }
-    }
-
-    /// Check if the router is loaded.
-    pub fn is_loaded(&self) -> bool {
-        self.engine.is_loaded()
     }
 }
 
@@ -153,20 +130,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_intent_router_creation() {
-        let router = IntentRouter::new(RouterConfig::default());
-        assert!(!router.is_loaded());
-    }
-
-    #[test]
-    fn test_parse_intent() {
-        let router = IntentRouter::new(RouterConfig::default());
-        assert_eq!(router.parse_intent("Conversation"), Intent::Conversation);
-        assert_eq!(router.parse_intent("EntityLookup"), Intent::EntityLookup);
-        assert_eq!(router.parse_intent("WebFetch"), Intent::WebFetch);
-        assert_eq!(router.parse_intent("ExecuteAction"), Intent::ExecuteAction);
-        assert_eq!(router.parse_intent("SystemCommand"), Intent::SystemCommand);
-        assert_eq!(router.parse_intent("garbage"), Intent::Conversation); // fallback
+    fn test_intent_from_label() {
+        assert_eq!(Intent::from_label("conversation"), Intent::Conversation);
+        assert_eq!(Intent::from_label("entity_lookup"), Intent::EntityLookup);
+        assert_eq!(Intent::from_label("EntityLookup"), Intent::EntityLookup);
+        assert_eq!(Intent::from_label("web_fetch"), Intent::WebFetch);
+        assert_eq!(Intent::from_label("execute_action"), Intent::ExecuteAction);
+        assert_eq!(Intent::from_label("system_command"), Intent::SystemCommand);
+        assert_eq!(Intent::from_label("garbage"), Intent::Unknown);
     }
 
     #[test]
