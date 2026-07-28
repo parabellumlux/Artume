@@ -69,8 +69,11 @@ dependencies = [
 name = "aether-orchestrator"
 version = "0.1.0"
 dependencies = [
+ "aether-attention",
+ "aether-audio",
  "aether-browser",
  "aether-buffer",
+ "aetherfs-proto",
  "any-tts",
  "anyhow",
  "chrono",
@@ -84,6 +87,10 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
+ "tokio-stream",
+ "tonic 0.11.0",
+ "tower 0.4.13",
+ "uuid",
  "whisper-rs",
 ]
 

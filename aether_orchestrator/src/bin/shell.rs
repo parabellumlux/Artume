@@ -31,6 +31,9 @@ async fn main() -> anyhow::Result<()> {
     println!("Subsystems:");
     println!("  Web Fetch:    aether_browser (HTTP + Readability)");
     println!("  Entity Lookup: aether_buffer (NER + ring buffer)");
+    println!("  File Search:  aetherfs-core (gRPC + SQLite + Qdrant)");
+    println!("  Spatial Audio: aether_audio (binaural HRTF mixer)");
+    println!("  Attention:    aether_attention (cognitive load governor)");
     println!();
 
     let config = ConversationConfig {
@@ -41,14 +44,23 @@ async fn main() -> anyhow::Result<()> {
     let mut loop_ = ConversationLoop::new(config);
     loop_.load_all()?;
 
-    // Health check: verify Ollama is running.
-    print!("  Checking Ollama connection... ");
+    // Health checks.
+    print!("  Checking Ollama... ");
     io::stdout().flush()?;
     if loop_.check_ollama_health().await {
         println!("✓ connected");
     } else {
         println!("✗ not reachable — will use template fallbacks");
         println!("  Start Ollama with: ollama serve");
+    }
+
+    print!("  Checking file search daemon... ");
+    io::stdout().flush()?;
+    if loop_.check_file_search_health().await {
+        println!("✓ connected");
+    } else {
+        println!("✗ not reachable — file search unavailable");
+        println!("  Start with: cargo run --bin aetherfs-core");
     }
     println!();
 

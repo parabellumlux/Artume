@@ -7,12 +7,18 @@
 //! This is the top-level orchestrator that makes AetherOS feel like
 //! a conversation rather than a menu system.
 
+use crate::file_search::FileSearchClient;
 use crate::ollama::{OllamaClient, OllamaModel};
 use crate::router::{Intent, IntentRouter, RouterConfig};
 #[cfg(feature = "stt")]
 use crate::stt::{SttConfig, SttEngine};
 #[cfg(feature = "tts")]
 use crate::tts::{TtsConfig, TtsEngine};
+use aether_attention::{
+    CognitiveLoadEvaluator, DeliveryDecision, PendingNotificationQueue, SystemEvent,
+    EventCategory, EventSeverity, UserFocusLevel,
+};
+use aether_audio::{ContextStack, SpatialMixer, SpatialPosition, VirtualSource};
 use aether_browser::{BrowserEngine, ReadabilityExtractor, ConversationalFormatter};
 use aether_buffer::{ContextResolver, TranscriptRingBuffer};
 use log::{debug, info, warn};
@@ -58,6 +64,8 @@ pub struct ConversationConfig {
     pub voice_enabled: bool,
     /// Maximum conversation history turns to include in context.
     pub max_history_turns: usize,
+    /// Path to the aetherfs-core daemon socket.
+    pub file_search_socket: String,
 }
 
 impl Default for ConversationConfig {
@@ -74,6 +82,7 @@ impl Default for ConversationConfig {
                 .to_string(),
             voice_enabled: false,
             max_history_turns: 5,
+            file_search_socket: "/tmp/aetherfs.sock".to_string(),
         }
     }
 }
@@ -96,6 +105,16 @@ pub struct ConversationLoop {
     browser: BrowserEngine,
     /// Transcript ring buffer for entity lookup.
     transcript_buffer: TranscriptRingBuffer,
+    /// File search client for aetherfs-core daemon.
+    file_search: FileSearchClient,
+    /// Spatial audio mixer for binaural TTS output.
+    spatial_mixer: SpatialMixer,
+    /// Audio context stack for interruption handling.
+    context_stack: ContextStack,
+    /// Cognitive load evaluator for notification management.
+    attention_evaluator: CognitiveLoadEvaluator,
+    /// Pending notification queue for suppressed events.
+    notification_queue: PendingNotificationQueue,
     /// STT engine (only available with "stt" feature).
     #[cfg(feature = "stt")]
     stt: SttEngine,
@@ -115,10 +134,24 @@ impl ConversationLoop {
         let ollama = OllamaClient::new(None);
         let browser = BrowserEngine::new().unwrap_or_else(|e| {
             warn!("Failed to create browser engine: {e} — web fetch will be unavailable");
-            // Create a minimal placeholder — BrowserEngine::new() only fails on
-            // client builder error, which is rare. We still need the field.
             BrowserEngine::new().expect("BrowserEngine creation failed")
         });
+        let file_search = FileSearchClient::new(Some(config.file_search_socket.clone()));
+
+        // Initialise spatial audio with default sources.
+        let mut spatial_mixer = SpatialMixer::new();
+        spatial_mixer.add_source(VirtualSource::new(
+            "Primary Voice",
+            SpatialPosition::CENTRE,
+        ));
+        spatial_mixer.add_source(VirtualSource::new(
+            "System Alert",
+            SpatialPosition::SOFT_RIGHT_45,
+        ));
+        spatial_mixer.add_source(VirtualSource::new(
+            "Background Context",
+            SpatialPosition::SOFT_LEFT_45,
+        ));
 
         Self {
             config,
@@ -126,6 +159,11 @@ impl ConversationLoop {
             ollama,
             browser,
             transcript_buffer: TranscriptRingBuffer::new(),
+            file_search,
+            spatial_mixer,
+            context_stack: ContextStack::new(8),
+            attention_evaluator: CognitiveLoadEvaluator::new(),
+            notification_queue: PendingNotificationQueue::new(50),
             #[cfg(feature = "stt")]
             stt: SttEngine::new(config.stt.clone()),
             #[cfg(feature = "tts")]
@@ -151,6 +189,11 @@ impl ConversationLoop {
                 false
             }
         }
+    }
+
+    /// Check if the file search daemon is reachable.
+    pub async fn check_file_search_health(&mut self) -> bool {
+        self.file_search.health().await
     }
 
     /// Load all models.
@@ -185,7 +228,8 @@ impl ConversationLoop {
     /// 1. Classify intent via router model
     /// 2. Dispatch to the appropriate handler
     /// 3. Generate response
-    /// 4. Optionally synthesize speech
+    /// 4. Optionally synthesize speech through spatial audio
+    /// 5. Evaluate cognitive load for notification management
     pub async fn process_turn(&mut self, user_text: &str) -> anyhow::Result<Turn> {
         let start = Instant::now();
         let timestamp = chrono::Utc::now();
@@ -201,6 +245,7 @@ impl ConversationLoop {
             Intent::Conversation => self.handle_conversation(user_text).await,
             Intent::EntityLookup => self.handle_entity_lookup(user_text),
             Intent::WebFetch => self.handle_web_fetch(user_text).await,
+            Intent::FileSearch => self.handle_file_search(user_text).await,
             Intent::ExecuteAction => self.handle_execute_action(user_text),
             Intent::SystemCommand => self.handle_system_command(user_text),
             Intent::Unknown => self.handle_unknown(user_text),
@@ -219,13 +264,41 @@ impl ConversationLoop {
             timestamp,
         };
 
-        // Step 3: Optionally speak the response.
+        // Step 3: Synthesize speech through spatial audio if voice is enabled.
         #[cfg(feature = "tts")]
         if self.config.voice_enabled && self.tts.is_loaded() {
             match self.tts.synthesize(&turn.response) {
-                Ok(_samples) => debug!("TTS: synthesized response"),
+                Ok(samples) => {
+                    // Route through spatial mixer at centre position.
+                    for &sample in &samples {
+                        self.spatial_mixer.process_frame(sample);
+                    }
+                    debug!("TTS: synthesized response through spatial mixer");
+                }
                 Err(e) => warn!("TTS synthesis failed: {e}"),
             }
+        }
+
+        // Step 4: Evaluate cognitive load for notification management.
+        let event = SystemEvent::new(
+            EventCategory::MessageNotification,
+            EventSeverity::Normal,
+            format!("User said: {}", user_text.chars().take(40).collect::<String>()),
+        );
+        let decision = self.attention_evaluator.evaluate(&event);
+        match decision {
+            DeliveryDecision::Queue => {
+                self.notification_queue.push(event);
+            }
+            DeliveryDecision::Drop => {
+                debug!("Attention: dropped trivial event during high focus");
+            }
+            _ => {}
+        }
+
+        // Tick the notification queue for idle transitions.
+        if let Some(summary) = self.notification_queue.tick(&self.attention_evaluator) {
+            info!("Attention: idle transition — batch summary: {summary}");
         }
 
         self.history.push(turn.clone());
@@ -296,7 +369,6 @@ impl ConversationLoop {
                 format!("I found {}: {}.", entity.entity_type, entity.value)
             }
             None => {
-                // Fallback: search the buffer for any recent entities.
                 let all = self.transcript_buffer.all_entities();
                 if all.is_empty() {
                     "I don't see any recent information I can look up. Try saying something like 'Copy that tracking number' after I've mentioned one."
@@ -318,7 +390,6 @@ impl ConversationLoop {
     }
 
     async fn handle_web_fetch(&mut self, user_text: &str) -> String {
-        // Extract a URL from the text.
         let url = self.extract_url(user_text);
 
         match url {
@@ -326,11 +397,9 @@ impl ConversationLoop {
                 info!("WebFetch: fetching {u}");
                 match self.browser.fetch(&u).await {
                     Ok(result) => {
-                        // Extract readable content.
                         let content = ReadabilityExtractor::extract(&result.html);
                         let formatted = ConversationalFormatter::format(&content);
 
-                        // If we have Ollama, summarize the content.
                         if formatted.len() > 200 {
                             let summary_prompt = format!(
                                 "Summarize this web page content in 2-3 concise sentences:\n\nTitle: {}\n\n{}",
@@ -348,7 +417,6 @@ impl ConversationLoop {
                                     )
                                 }
                                 Err(_) => {
-                                    // Fallback: return the formatted content directly.
                                     let preview = if formatted.len() > 500 {
                                         format!("{}... (content continues)", &formatted[..500])
                                     } else {
@@ -374,6 +442,42 @@ impl ConversationLoop {
         }
     }
 
+    async fn handle_file_search(&mut self, user_text: &str) -> String {
+        // Connect to the daemon if not already connected.
+        if self.file_search.health().await {
+            match self.file_search.search(user_text, 5).await {
+                Ok(results) => {
+                    if results.is_empty() {
+                        format!("I couldn't find any files matching \"{}\".", user_text)
+                    } else {
+                        let top = &results[0];
+                        let mut response = format!(
+                            "I found {} result{}. The top match is \"{}\" — {}. ",
+                            results.len(),
+                            if results.len() == 1 { "" } else { "s" },
+                            top.filename,
+                            top.spoken_summary,
+                        );
+                        if results.len() > 1 {
+                            let others: Vec<&str> = results[1..]
+                                .iter()
+                                .map(|r| r.filename.as_str())
+                                .collect();
+                            response.push_str(&format!("Also found: {}.", others.join(", ")));
+                        }
+                        response
+                    }
+                }
+                Err(e) => {
+                    warn!("FileSearch: query failed: {e}");
+                    "I had trouble searching your files. The file index daemon may not be running.".to_string()
+                }
+            }
+        } else {
+            "File search is not available. Start the aetherfs-core daemon first with: cargo run --bin aetherfs-core".to_string()
+        }
+    }
+
     fn handle_execute_action(&mut self, user_text: &str) -> String {
         format!(
             "I understand you want to perform an action: \"{}\". \
@@ -392,7 +496,7 @@ impl ConversationLoop {
 
     fn handle_unknown(&mut self, _user_text: &str) -> String {
         "I'm not sure what you need. You can ask me to read a web page, \
-         look up information from our conversation, or just chat."
+         look up information from our conversation, search your files, or just chat."
             .to_string()
     }
 
@@ -422,7 +526,6 @@ impl ConversationLoop {
     }
 
     fn extract_url(&self, text: &str) -> Option<String> {
-        // Simple URL extraction.
         for word in text.split_whitespace() {
             if word.starts_with("http://") || word.starts_with("https://") {
                 return Some(word.trim_end_matches(&['.', ',', ';', '!', '?'][..]).to_string());

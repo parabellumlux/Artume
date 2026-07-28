@@ -21,6 +21,8 @@ pub enum Intent {
     EntityLookup,
     /// Fetch and summarize a web page.
     WebFetch,
+    /// Search the file index ("Find my tax documents").
+    FileSearch,
     /// Execute a system action (call, email, open app).
     ExecuteAction,
     /// System command (volume, settings, help).
@@ -35,6 +37,7 @@ impl Intent {
             Self::Conversation => "conversation",
             Self::EntityLookup => "entity_lookup",
             Self::WebFetch => "web_fetch",
+            Self::FileSearch => "file_search",
             Self::ExecuteAction => "execute_action",
             Self::SystemCommand => "system_command",
             Self::Unknown => "unknown",
@@ -47,6 +50,7 @@ impl Intent {
             "conversation" => Self::Conversation,
             "entity_lookup" | "entitylookup" => Self::EntityLookup,
             "web_fetch" | "webfetch" => Self::WebFetch,
+            "file_search" | "filesearch" | "search" => Self::FileSearch,
             "execute_action" | "executeaction" => Self::ExecuteAction,
             "system_command" | "systemcommand" => Self::SystemCommand,
             _ => Self::Unknown,
