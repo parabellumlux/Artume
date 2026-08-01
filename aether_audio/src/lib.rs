@@ -9,6 +9,9 @@
 
 pub mod spatial_mixer;
 pub mod context_stack;
+pub mod wake_word;
+pub mod output;
+pub mod capture;
 
 pub use spatial_mixer::{
     AudioError, BinauralKernel, SpatialMixer, SpatialPosition, VirtualSource,

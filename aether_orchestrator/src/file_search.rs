@@ -7,13 +7,14 @@
 //! background file indexing daemon.
 
 use anyhow::{Context, Result};
-use log::{debug, info, warn};
+use log::info;
 use std::time::Duration;
 use tonic::transport::{Channel, Endpoint};
 use tower::service_fn;
 
 use aetherfs_proto::aetherfs::aether_engine_client::AetherEngineClient;
 use aetherfs_proto::aetherfs::VoiceSearchRequest;
+use aetherfs_proto::aetherfs::IndexConversationRequest;
 
 /// Client for querying the AetherFS file index daemon.
 pub struct FileSearchClient {
@@ -102,6 +103,35 @@ impl FileSearchClient {
 
         results.truncate(limit);
         Ok(results)
+    }
+
+    /// Index a conversation turn for future RAG retrieval.
+    pub async fn index_conversation_turn(
+        &mut self,
+        session_id: &str,
+        user_text: &str,
+        assistant_response: &str,
+        intent: &str,
+    ) -> Result<()> {
+        let client = self
+            .client
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("FileSearchClient not connected — call connect() first"))?;
+
+        let req = IndexConversationRequest {
+            session_id: session_id.to_string(),
+            user_text: user_text.to_string(),
+            assistant_response: assistant_response.to_string(),
+            intent: intent.to_string(),
+            timestamp_unix: chrono::Utc::now().timestamp(),
+        };
+
+        client
+            .index_conversation(req)
+            .await
+            .with_context(|| "Failed to index conversation turn")?;
+
+        Ok(())
     }
 
     /// Check if the daemon is reachable.

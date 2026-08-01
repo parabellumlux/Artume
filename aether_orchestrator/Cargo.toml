@@ -5,13 +5,13 @@ edition = "2021"
 description = "AetherOS Conversational Orchestrator — Ollama-backed AI pipeline with dual-GPU routing"
 
 [features]
-default = ["ollama"]
+default = ["ollama", "tts", "stt"]
 # Ollama HTTP API backend (default — no native CUDA deps needed)
 ollama = []
 # Speech-to-text via whisper.cpp (optional)
 stt = ["whisper-rs"]
-# Text-to-speech via any-tts (optional)
-tts = ["any-tts"]
+# Text-to-speech via Piper subprocess (always available)
+tts = []
 
 [dependencies]
 # Ollama HTTP API client
@@ -19,9 +19,6 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 
 # Speech-to-text via whisper.cpp (feature-gated)
 whisper-rs = { version = "0.16", optional = true }
-
-# Text-to-speech via any-tts (feature-gated)
-any-tts = { version = "0.1", default-features = false, features = ["kokoro", "download"], optional = true }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
@@ -47,6 +44,8 @@ env_logger = "0.11"
 parking_lot = "0.12"
 chrono = "0.4"
 uuid = { version = "1", features = ["v4"] }
+dirs = "5"
+toml = "0.8"
 
 # gRPC client for aetherfs-core
 tonic = "0.11"
@@ -66,3 +65,7 @@ path = "src/lib.rs"
 [[bin]]
 name = "aether-shell"
 path = "src/bin/shell.rs"
+
+[[bin]]
+name = "tts-test"
+path = "src/bin/tts_test.rs"

@@ -8,6 +8,8 @@ use aetherfs_proto::aetherfs::aether_engine_server::AetherEngine;
 use aetherfs_proto::aetherfs::{
     VoiceSearchRequest, VoiceSearchResponse, IndexRequest, IndexResponse,
     DuplicateRequest, DuplicateResponse, DuplicateGroup, FileMatch, ConversationalAnchor,
+    IndexConversationRequest, IndexConversationResponse,
+    SearchConversationRequest, SearchConversationResponse, ConversationTurn,
 };
 use crate::index::IndexManager;
 
@@ -262,5 +264,53 @@ impl AetherEngine for AetherEngineService {
             .collect();
 
         Ok(Response::new(DuplicateResponse { groups }))
+    }
+
+    async fn index_conversation(
+        &self,
+        request: Request<IndexConversationRequest>,
+    ) -> Result<Response<IndexConversationResponse>, Status> {
+        let req = request.into_inner();
+        match self.index_manager.sqlite().insert_conversation_turn(
+            &req.session_id,
+            &req.user_text,
+            &req.assistant_response,
+            &req.intent,
+            req.timestamp_unix,
+        ) {
+            Ok(_) => Ok(Response::new(IndexConversationResponse {
+                success: true,
+                message: "Conversation turn indexed".to_string(),
+            })),
+            Err(e) => Err(Status::internal(format!("Database error: {}", e))),
+        }
+    }
+
+    async fn search_conversation(
+        &self,
+        request: Request<SearchConversationRequest>,
+    ) -> Result<Response<SearchConversationResponse>, Status> {
+        let req = request.into_inner();
+        let limit = if req.limit <= 0 { 10 } else { req.limit as usize };
+
+        match self.index_manager.sqlite().search_conversation(&req.query, limit) {
+            Ok(results) => {
+                let turns: Vec<ConversationTurn> = results
+                    .into_iter()
+                    .map(|(session_id, user_text, assistant_response, intent, timestamp, score)| {
+                        ConversationTurn {
+                            session_id,
+                            user_text,
+                            assistant_response,
+                            intent,
+                            timestamp_unix: timestamp,
+                            score,
+                        }
+                    })
+                    .collect();
+                Ok(Response::new(SearchConversationResponse { results: turns }))
+            }
+            Err(e) => Err(Status::internal(format!("Database error: {}", e))),
+        }
     }
 }

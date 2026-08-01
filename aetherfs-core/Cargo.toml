@@ -24,7 +24,9 @@ futures-util = "0.3.30"
 futures = "0.3.30"
 uuid = { version = "1.8.0", features = ["v4", "v5"] }
 ndarray = "0.17.2"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
+dirs = "5"
 tokio-stream = { version = "0.1.15", features = ["net"] }
 
 

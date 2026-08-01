@@ -22,6 +22,14 @@ pub struct DbFileRecord {
     pub location_context: String,
 }
 
+/// A content chunk extracted from a file for RAG.
+#[derive(Debug, Clone)]
+pub struct DbContentChunk {
+    pub source_path: String,
+    pub chunk_index: i64,
+    pub content: String,
+}
+
 impl SqliteIndex {
     /// Open or create the SQLite database file.
     pub fn new<P: AsRef<Path>>(db_path: P) -> Result<Self> {
@@ -111,7 +119,101 @@ impl SqliteIndex {
             [],
         )?;
 
+        // Content chunks table for RAG
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS file_chunks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_path TEXT NOT NULL,
+                chunk_index INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                UNIQUE(source_path, chunk_index)
+            );",
+            [],
+        )?;
+
+        // FTS5 on chunks for lexical search
+        conn.execute(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
+                source_path UNINDEXED,
+                content,
+                content = 'file_chunks',
+                content_rowid = 'id'
+            );",
+            [],
+        )?;
+
+        // Chunk FTS5 triggers
+        conn.execute(
+            "CREATE TRIGGER IF NOT EXISTS chunks_ai AFTER INSERT ON file_chunks BEGIN
+                INSERT INTO chunks_fts(rowid, source_path, content)
+                VALUES (new.id, new.source_path, new.content);
+            END;",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE TRIGGER IF NOT EXISTS chunks_ad AFTER DELETE ON file_chunks BEGIN
+                INSERT INTO chunks_fts(chunks_fts, rowid, source_path, content)
+                VALUES('delete', old.id, old.source_path, old.content);
+            END;",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE TRIGGER IF NOT EXISTS chunks_au AFTER UPDATE ON file_chunks BEGIN
+                INSERT INTO chunks_fts(chunks_fts, rowid, source_path, content)
+                VALUES('delete', old.id, old.source_path, old.content);
+                INSERT INTO chunks_fts(rowid, source_path, content)
+                VALUES (new.id, new.source_path, new.content);
+            END;",
+            [],
+        )?;
+
+        // Conversation history table for RAG
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS conversation_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                user_text TEXT NOT NULL,
+                assistant_response TEXT NOT NULL,
+                intent TEXT NOT NULL,
+                timestamp_unix INTEGER NOT NULL
+            );",
+            [],
+        )?;
+
+        // FTS5 on conversation history
+        conn.execute(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS conversation_fts USING fts5(
+                session_id UNINDEXED,
+                user_text,
+                assistant_response,
+                intent,
+                content = 'conversation_history',
+                content_rowid = 'id'
+            );",
+            [],
+        )?;
+
+        // Conversation FTS5 triggers
+        conn.execute(
+            "CREATE TRIGGER IF NOT EXISTS conv_ai AFTER INSERT ON conversation_history BEGIN
+                INSERT INTO conversation_fts(rowid, session_id, user_text, assistant_response, intent)
+                VALUES (new.id, new.session_id, new.user_text, new.assistant_response, new.intent);
+            END;",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE TRIGGER IF NOT EXISTS conv_ad AFTER DELETE ON conversation_history BEGIN
+                INSERT INTO conversation_fts(conversation_fts, rowid, session_id, user_text, assistant_response, intent)
+                VALUES('delete', old.id, old.session_id, old.user_text, old.assistant_response, old.intent);
+            END;",
+            [],
+        )?;
+
         Ok(())
+
     }
 
     /// Insert or update a file record.
@@ -150,6 +252,107 @@ impl SqliteIndex {
             ],
         )?;
         Ok(())
+    }
+
+    /// Insert or update a content chunk for RAG.
+    pub fn upsert_chunk(&self, chunk: &DbContentChunk) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO file_chunks (source_path, chunk_index, content)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(source_path, chunk_index) DO UPDATE SET
+                 content = excluded.content;",
+            params![chunk.source_path, chunk.chunk_index, chunk.content],
+        )?;
+        Ok(())
+    }
+
+    /// Search content chunks by FTS5 lexical match.
+    pub fn search_chunks(&self, query_text: &str) -> Result<Vec<(DbContentChunk, f32)>> {
+        let conn = self.conn.lock().unwrap();
+        let safe_query = query_text.replace('"', "").replace('\'', "");
+        if safe_query.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut stmt = conn.prepare(
+            "SELECT c.source_path, c.chunk_index, c.content, bm25(chunks_fts)
+             FROM file_chunks c
+             JOIN chunks_fts fts ON c.id = fts.rowid
+             WHERE chunks_fts MATCH ?1
+             ORDER BY bm25(chunks_fts) ASC
+             LIMIT 20;",
+        )?;
+
+        let rows = stmt.query_map(params![format!("{}*", safe_query)], |row| {
+            let chunk = DbContentChunk {
+                source_path: row.get(0)?,
+                chunk_index: row.get(1)?,
+                content: row.get(2)?,
+            };
+            let bm25_score: f64 = row.get(3)?;
+            let score = (-bm25_score) as f32;
+            Ok((chunk, score))
+        })?;
+
+        let mut results = Vec::new();
+        for r in rows {
+            results.push(r?);
+        }
+        Ok(results)
+    }
+
+    /// Insert a conversation turn for future RAG retrieval.
+    pub fn insert_conversation_turn(
+        &self,
+        session_id: &str,
+        user_text: &str,
+        assistant_response: &str,
+        intent: &str,
+        timestamp_unix: i64,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO conversation_history (session_id, user_text, assistant_response, intent, timestamp_unix)
+             VALUES (?1, ?2, ?3, ?4, ?5);",
+            params![session_id, user_text, assistant_response, intent, timestamp_unix],
+        )?;
+        Ok(())
+    }
+
+    /// Search conversation history by FTS5 lexical match.
+    pub fn search_conversation(&self, query_text: &str, limit: usize) -> Result<Vec<(String, String, String, String, i64, f32)>> {
+        let conn = self.conn.lock().unwrap();
+        let safe_query = query_text.replace('"', "").replace('\'', "");
+        if safe_query.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut stmt = conn.prepare(
+            "SELECT c.session_id, c.user_text, c.assistant_response, c.intent, c.timestamp_unix, bm25(conversation_fts)
+             FROM conversation_history c
+             JOIN conversation_fts fts ON c.id = fts.rowid
+             WHERE conversation_fts MATCH ?1
+             ORDER BY bm25(conversation_fts) ASC
+             LIMIT ?2;",
+        )?;
+
+        let rows = stmt.query_map(params![format!("{}*", safe_query), limit as i64], |row| {
+            let session_id: String = row.get(0)?;
+            let user_text: String = row.get(1)?;
+            let assistant_response: String = row.get(2)?;
+            let intent: String = row.get(3)?;
+            let timestamp: i64 = row.get(4)?;
+            let bm25_score: f64 = row.get(5)?;
+            let score = (-bm25_score) as f32;
+            Ok((session_id, user_text, assistant_response, intent, timestamp, score))
+        })?;
+
+        let mut results = Vec::new();
+        for r in rows {
+            results.push(r?);
+        }
+        Ok(results)
     }
 
     /// Retrieve all duplicate records.

@@ -20,6 +20,10 @@ pub mod stt;
 pub mod tts;
 pub mod conversation;
 pub mod file_search;
+pub mod profile;
+pub mod skills;
+#[cfg(feature = "tts")]
+pub mod tts_service;
 
 pub use ollama::{OllamaClient, OllamaModel};
 pub use router::{Intent, IntentRouter, RouterConfig};

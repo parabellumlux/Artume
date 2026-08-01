@@ -4,7 +4,7 @@
 //! files using Whisper tiny.en on CPU.
 
 use anyhow::{Context, Result};
-use log::{debug, info, warn};
+use log::{debug, info};
 use std::path::Path;
 use std::time::Instant;
 

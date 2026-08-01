@@ -3,9 +3,10 @@ pub mod qdrant;
 
 use std::path::Path;
 use chrono::{DateTime, Utc, Local, Timelike};
-use sqlite::{SqliteIndex, DbFileRecord};
+use sqlite::{SqliteIndex, DbFileRecord, DbContentChunk};
 use qdrant::QdrantIndex;
 use crate::classifier::FileClassifier;
+use crate::extract::{extract_text, chunk_text, ContentChunk};
 
 pub struct IndexManager {
     sqlite: SqliteIndex,
@@ -61,7 +62,7 @@ impl IndexManager {
         &self.classifier
     }
 
-    /// Indexes a single file: Classifies, generates spoken summaries/anchors, computes embeddings, and updates databases.
+    /// Indexes a single file: Classifies, extracts content, generates spoken summaries/anchors, computes embeddings, and updates databases.
     pub async fn index_file(
         &self,
         path: &Path,
@@ -86,7 +87,24 @@ impl IndexManager {
         let temporal_context = generate_temporal_context(modified_time);
         let location_context = generate_location_context(path);
 
-        // 3. Save to SQLite
+        // 3. Extract text content and create chunks
+        let content_chunks: Vec<ContentChunk> = if let Some(text) = extract_text(path) {
+            let chunks = chunk_text(&text, 1000);
+            chunks
+                .into_iter()
+                .map(|(idx, chunk_text)| ContentChunk {
+                    source_path: path.to_string_lossy().to_string(),
+                    chunk_index: idx,
+                    text: chunk_text,
+                    char_start: 0, // approximate — we lose exact offset with chunking
+                    char_len: 0,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        // 4. Save to SQLite
         let record = DbFileRecord {
             path: path.to_string_lossy().to_string(),
             filename,
@@ -103,7 +121,17 @@ impl IndexManager {
         };
         self.sqlite.upsert_file(&record)?;
 
-        // 4. Generate Semantic Embeddings (if MiniLM loaded) and upload to Qdrant
+        // 5. Save content chunks to SQLite
+        for chunk in &content_chunks {
+            let db_chunk = DbContentChunk {
+                source_path: chunk.source_path.clone(),
+                chunk_index: chunk.chunk_index as i64,
+                content: chunk.text.clone(),
+            };
+            let _ = self.sqlite.upsert_chunk(&db_chunk);
+        }
+
+        // 6. Generate Semantic Embeddings (if MiniLM loaded) and upload to Qdrant
         let text_to_embed = format!(
             "File named {} of type {}. Spoken summary: {}. Context: {}.",
             record.filename, record.classified_type, record.spoken_summary, record.temporal_context
@@ -112,6 +140,16 @@ impl IndexManager {
             let _ = self.qdrant
                 .upsert_vector(&record.path, embedding, &record.classified_type, &record.spoken_summary)
                 .await;
+        }
+
+        // 7. Also embed each content chunk for fine-grained RAG
+        for chunk in &content_chunks {
+            if let Some(embedding) = self.classifier.get_text_embedding(&chunk.text) {
+                let chunk_id = format!("{}#chunk{}", chunk.source_path, chunk.chunk_index);
+                let _ = self.qdrant
+                    .upsert_vector(&chunk_id, embedding, &format!("{}_chunk", record.classified_type), &chunk.text)
+                    .await;
+            }
         }
 
         Ok(())

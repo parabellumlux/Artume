@@ -12,6 +12,12 @@ service AetherEngine {
     // Forces a manual indexing/re-scan of a specific directory tree.
     rpc IndexDirectory(IndexRequest) returns (IndexResponse);
 
+    // Index a conversation turn for future RAG retrieval.
+    rpc IndexConversation(IndexConversationRequest) returns (IndexConversationResponse);
+
+    // Search conversation history.
+    rpc SearchConversation(SearchConversationRequest) returns (SearchConversationResponse);
+
     // Queries the deduplication engine for all known duplicate groups or pairs.
     rpc GetDuplicates(DuplicateRequest) returns (DuplicateResponse);
 }
@@ -100,6 +106,39 @@ message IndexResponse {
     bool success = 1;
     int64 files_indexed = 2;
     string message = 3;
+}
+
+// A conversation turn to be indexed for future RAG.
+message IndexConversationRequest {
+    string session_id = 1;
+    string user_text = 2;
+    string assistant_response = 3;
+    string intent = 4;
+    int64 timestamp_unix = 5;
+}
+
+message IndexConversationResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+// Search conversation history.
+message SearchConversationRequest {
+    string query = 1;
+    int32 limit = 2;
+}
+
+message SearchConversationResponse {
+    repeated ConversationTurn results = 1;
+}
+
+message ConversationTurn {
+    string session_id = 1;
+    string user_text = 2;
+    string assistant_response = 3;
+    string intent = 4;
+    int64 timestamp_unix = 5;
+    float score = 6;
 }
 
 // Request to fetch duplicate files.

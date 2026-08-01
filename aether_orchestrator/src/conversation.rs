@@ -9,6 +9,7 @@
 
 use crate::file_search::FileSearchClient;
 use crate::ollama::{OllamaClient, OllamaModel};
+use crate::profile::UserProfile;
 use crate::router::{Intent, IntentRouter, RouterConfig};
 #[cfg(feature = "stt")]
 use crate::stt::{SttConfig, SttEngine};
@@ -16,12 +17,14 @@ use crate::stt::{SttConfig, SttEngine};
 use crate::tts::{TtsConfig, TtsEngine};
 use aether_attention::{
     CognitiveLoadEvaluator, DeliveryDecision, PendingNotificationQueue, SystemEvent,
-    EventCategory, EventSeverity, UserFocusLevel,
+    EventCategory, EventSeverity,
 };
 use aether_audio::{ContextStack, SpatialMixer, SpatialPosition, VirtualSource};
+use aether_audio::wake_word::{WakeWordDetector, WakeWordConfig, WakeWordModel, WakeWordEvent};
 use aether_browser::{BrowserEngine, ReadabilityExtractor, ConversationalFormatter};
 use aether_buffer::{ContextResolver, TranscriptRingBuffer};
 use log::{debug, info, warn};
+use std::path::PathBuf;
 use std::time::Instant;
 
 // ---------------------------------------------------------------------------
@@ -66,23 +69,29 @@ pub struct ConversationConfig {
     pub max_history_turns: usize,
     /// Path to the aetherfs-core daemon socket.
     pub file_search_socket: String,
+    /// Path to the soul.md file.
+    pub soul_path: String,
 }
 
 impl Default for ConversationConfig {
     fn default() -> Self {
+        // Resolve soul.md path relative to the crate source.
+        let soul_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("soul.md")
+            .to_string_lossy()
+            .to_string();
+
         Self {
             router: RouterConfig::default(),
             #[cfg(feature = "stt")]
             stt: SttConfig::default(),
             #[cfg(feature = "tts")]
             tts: TtsConfig::default(),
-            system_prompt: "You are AetherOS, a helpful voice-controlled operating system assistant. \
-                           Keep responses concise and conversational since they will be spoken aloud. \
-                           Use natural language. Be helpful, clear, and direct."
-                .to_string(),
+            system_prompt: String::new(), // built at runtime from soul + profile
             voice_enabled: false,
             max_history_turns: 5,
             file_search_socket: "/tmp/aetherfs.sock".to_string(),
+            soul_path,
         }
     }
 }
@@ -110,6 +119,7 @@ pub struct ConversationLoop {
     /// Spatial audio mixer for binaural TTS output.
     spatial_mixer: SpatialMixer,
     /// Audio context stack for interruption handling.
+    #[allow(dead_code)]
     context_stack: ContextStack,
     /// Cognitive load evaluator for notification management.
     attention_evaluator: CognitiveLoadEvaluator,
@@ -125,6 +135,15 @@ pub struct ConversationLoop {
     history: Vec<Turn>,
     /// Total turns processed.
     total_turns: u64,
+    /// The user's profile (loaded from disk, or None on first run).
+    profile: Option<UserProfile>,
+    /// The soul identity text (loaded from soul.md).
+    #[allow(dead_code)]
+    soul_text: String,
+    /// Whether this is the first run (no profile exists yet).
+    is_first_run: bool,
+    /// Wake word detector (background thread).
+    wake_word: Option<WakeWordDetector>,
 }
 
 impl ConversationLoop {
@@ -137,6 +156,38 @@ impl ConversationLoop {
             BrowserEngine::new().expect("BrowserEngine creation failed")
         });
         let file_search = FileSearchClient::new(Some(config.file_search_socket.clone()));
+
+        // Load the soul identity from soul.md.
+        let soul_text = std::fs::read_to_string(&config.soul_path)
+            .unwrap_or_else(|e| {
+                warn!("Failed to load soul.md from '{}': {e}", config.soul_path);
+                String::new()
+            });
+
+        // Load or initialise the user profile.
+        let (profile, is_first_run) = if UserProfile::is_first_run() {
+            info!("First run detected — no user profile found");
+            (None, true)
+        } else {
+            let p = UserProfile::load().unwrap_or_else(|| {
+                warn!("Failed to load user profile, using defaults");
+                UserProfile::default()
+            });
+            (Some(p), false)
+        };
+
+        // Build the system prompt from soul + profile and store it.
+        let system_prompt = Self::build_system_prompt(&soul_text, profile.as_ref());
+        let mut config = config;
+        config.system_prompt = system_prompt;
+
+        // Clone config for TTS/STT before moving it into Self.
+        let tts_config = config.tts.clone();
+        #[cfg(feature = "stt")]
+        let stt_config = config.stt.clone();
+
+        // Wake word detection starts as None — call start_wake_word() to enable.
+        let wake_word = None;
 
         // Initialise spatial audio with default sources.
         let mut spatial_mixer = SpatialMixer::new();
@@ -165,12 +216,109 @@ impl ConversationLoop {
             attention_evaluator: CognitiveLoadEvaluator::new(),
             notification_queue: PendingNotificationQueue::new(50),
             #[cfg(feature = "stt")]
-            stt: SttEngine::new(config.stt.clone()),
+            stt: SttEngine::new(stt_config),
             #[cfg(feature = "tts")]
-            tts: TtsEngine::new(config.tts.clone()),
+            tts: TtsEngine::new(tts_config),
             history: Vec::new(),
             total_turns: 0,
+            profile,
+            soul_text,
+            is_first_run,
+            wake_word,
         }
+    }
+
+    /// Start the wake word detector on a background thread.
+    pub fn start_wake_word(&mut self) {
+        if self.wake_word.is_none() {
+            self.wake_word = Self::start_wake_word_inner();
+        }
+    }
+
+    /// Internal: start the wake word detector.
+    fn start_wake_word_inner() -> Option<WakeWordDetector> {
+        // Uses the built-in "Hey Jarvis" OpenWakeWord model as a placeholder
+        // until a custom "Hey Artume" model is trained.
+        // To train: collect ~50 samples of "Hey Artume", use OpenWakeWord
+        // training tools, then use:
+        //   WakeWordModel::Custom { path: "models/hey_artume.onnx", trigger_word: "Hey Artume" }
+        let config = WakeWordConfig {
+            model_source: WakeWordModel::BuiltInHeyJarvis,
+            threshold: 0.3,
+            device_name: None,
+        };
+
+        match WakeWordDetector::start(config) {
+            Ok(detector) => {
+                info!("WakeWordDetector: listening for wake word (placeholder: 'Hey Jarvis' model)");
+                Some(detector)
+            }
+            Err(e) => {
+                warn!("WakeWordDetector: failed to start: {e}");
+                None
+            }
+        }
+    }
+
+    /// Check if the wake word has been detected.
+    pub fn check_wake_word(&mut self) -> Option<String> {
+        if let Some(ref detector) = self.wake_word {
+            match detector.try_recv() {
+                Some(WakeWordEvent::Detected { word, .. }) => {
+                    info!("WakeWordDetector: wake word detected: '{}'", word);
+                    Some(word)
+                }
+                Some(WakeWordEvent::Error(e)) => {
+                    warn!("WakeWordDetector: error: {e}");
+                    None
+                }
+                None => None,
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Check if wake word detection is active.
+    pub fn wake_word_active(&self) -> bool {
+        self.wake_word.is_some()
+    }
+
+    /// Build the system prompt from the soul identity and user profile.
+    fn build_system_prompt(soul_text: &str, profile: Option<&UserProfile>) -> String {
+        let mut prompt = String::new();
+
+        // Soul identity (always present).
+        if !soul_text.is_empty() {
+            prompt.push_str(soul_text);
+        } else {
+            prompt.push_str("You are Artume, a voice-native operating system assistant. \
+                            Keep responses concise and conversational since they will be spoken aloud. \
+                            Use natural language. Be helpful, clear, and direct.");
+        }
+
+        // User profile (if available).
+        if let Some(profile) = profile {
+            prompt.push_str("\n\n---\n\n");
+            prompt.push_str(&profile.to_system_prompt());
+        }
+
+        prompt
+    }
+
+    /// Check if this is the first run (no user profile exists).
+    pub fn is_first_run(&self) -> bool {
+        self.is_first_run
+    }
+
+    /// Get a reference to the user profile, if loaded.
+    pub fn profile(&self) -> Option<&UserProfile> {
+        self.profile.as_ref()
+    }
+
+    /// Get a mutable reference to the user profile, if loaded.
+    pub fn profile_mut(&mut self) -> Option<&mut UserProfile> {
+        self.profile.as_mut()
     }
 
     /// Check if Ollama is reachable.
@@ -264,22 +412,7 @@ impl ConversationLoop {
             timestamp,
         };
 
-        // Step 3: Synthesize speech through spatial audio if voice is enabled.
-        #[cfg(feature = "tts")]
-        if self.config.voice_enabled && self.tts.is_loaded() {
-            match self.tts.synthesize(&turn.response) {
-                Ok(samples) => {
-                    // Route through spatial mixer at centre position.
-                    for &sample in &samples {
-                        self.spatial_mixer.process_frame(sample);
-                    }
-                    debug!("TTS: synthesized response through spatial mixer");
-                }
-                Err(e) => warn!("TTS synthesis failed: {e}"),
-            }
-        }
-
-        // Step 4: Evaluate cognitive load for notification management.
+        // Step 3: Evaluate cognitive load for notification management.
         let event = SystemEvent::new(
             EventCategory::MessageNotification,
             EventSeverity::Normal,
@@ -304,6 +437,20 @@ impl ConversationLoop {
         self.history.push(turn.clone());
         self.total_turns += 1;
 
+        // Index this conversation turn for future RAG (non-blocking, best-effort)
+        if self.file_search.health().await {
+            let session_id = format!("session_{}", self.total_turns);
+            let _ = self
+                .file_search
+                .index_conversation_turn(
+                    &session_id,
+                    &turn.user_text,
+                    &turn.response,
+                    turn.intent.label(),
+                )
+                .await;
+        }
+
         info!(
             "Turn #{}: intent={} response_len={} time={}ms",
             self.total_turns,
@@ -327,9 +474,33 @@ impl ConversationLoop {
     async fn handle_conversation(&mut self, user_text: &str) -> String {
         // Build message history for context.
         let mut messages: Vec<(&str, &str)> = Vec::new();
+        let mut owned_contexts: Vec<String> = Vec::new();
 
         // System prompt.
         messages.push(("system", &self.config.system_prompt));
+
+        // RAG: query aetherfs for relevant file context based on user input
+        if self.file_search.health().await {
+            match self.file_search.search(user_text, 3).await {
+                Ok(results) if !results.is_empty() => {
+                    let mut rag_context = String::from("\n\nRelevant files from your system:\n");
+                    for (i, r) in results.iter().enumerate() {
+                        rag_context.push_str(&format!(
+                            "{}. {} — {}. {}. {}\n",
+                            i + 1,
+                            r.filename,
+                            r.spoken_summary,
+                            r.temporal_context,
+                            r.location_context,
+                        ));
+                    }
+                    rag_context.push_str("\nUse this context if relevant to the user's question.\n");
+                    owned_contexts.push(rag_context);
+                    messages.push(("system", owned_contexts.last().unwrap()));
+                }
+                _ => {}
+            }
+        }
 
         // Recent history (sliding window).
         let start_idx = self
@@ -550,6 +721,28 @@ impl ConversationLoop {
     /// Check if voice is enabled.
     pub fn voice_enabled(&self) -> bool {
         self.config.voice_enabled
+    }
+
+    /// Synthesize speech from text using the TTS engine.
+    /// Returns 22050 Hz f32 PCM samples.
+    #[cfg(feature = "tts")]
+    pub fn synthesize_speech(&mut self, text: &str) -> anyhow::Result<Vec<f32>> {
+        if self.tts.is_loaded() {
+            self.tts.synthesize(text).map_err(|e| anyhow::anyhow!("TTS failed: {}", e))
+        } else {
+            Err(anyhow::anyhow!("TTS engine not loaded"))
+        }
+    }
+
+    /// Transcribe audio samples using the STT engine.
+    /// Takes 16kHz f32 PCM samples, returns transcribed text.
+    #[cfg(feature = "stt")]
+    pub fn transcribe_audio(&mut self, samples: &[f32]) -> anyhow::Result<String> {
+        if self.stt.is_loaded() {
+            self.stt.transcribe(samples).map_err(|e| anyhow::anyhow!("STT failed: {}", e))
+        } else {
+            Err(anyhow::anyhow!("STT engine not loaded"))
+        }
     }
 }
 

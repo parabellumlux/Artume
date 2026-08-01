@@ -1,0 +1,17 @@
+[Unit]
+Description=AetherFS Background File Indexing Daemon
+Documentation=https://github.com/parabellumlux/Artume
+After=network.target sound.target
+
+[Service]
+Type=simple
+ExecStart=%h/Desktop/aetherfs_engine/target/debug/aetherfs-core
+WorkingDirectory=%h/Desktop/aetherfs_engine
+Restart=on-failure
+RestartSec=5
+Nice=10
+IOSchedulingClass=idle
+CPUQuota=50%
+
+[Install]
+WantedBy=default.target

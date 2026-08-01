@@ -8,7 +8,7 @@
 //! - **Tier 3** (CPU): nomic-embed-text — embeddings
 
 use anyhow::{Context, Result};
-use log::{debug, info, warn};
+use log::{debug, info};
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
@@ -43,10 +43,13 @@ struct Options {
 #[derive(Debug, Deserialize)]
 struct ChatResponse {
     message: MessageContent,
+    #[allow(dead_code)]
     done: bool,
     #[serde(default)]
+    #[allow(dead_code)]
     eval_count: Option<i32>,
     #[serde(default)]
+    #[allow(dead_code)]
     eval_duration: Option<u64>,
 }
 
@@ -334,8 +337,9 @@ impl OllamaClient {
     /// Quick classification using the router model on the 1650S.
     pub async fn classify_intent(&self, utterance: &str) -> Result<String> {
         let prompt = format!(
-            "Classify this user utterance into one of these intents: \
-             conversation, entity_lookup, web_fetch, execute_action, system_command.\n\n\
+            "Classify this user utterance into exactly one intent label. \
+             Return ONLY the label word, nothing else.\n\n\
+             Labels: conversation, entity_lookup, web_fetch, file_search, execute_action, system_command\n\n\
              Utterance: {}\n\nIntent:",
             utterance
         );
