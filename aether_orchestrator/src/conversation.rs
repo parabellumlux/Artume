@@ -659,8 +659,7 @@ impl ConversationLoop {
 
     fn handle_system_command(&mut self, user_text: &str) -> String {
         format!(
-            "System command received: \"{}\". \
-             Volume and settings control coming soon.",
+            "System command: \"{}\". Use 'volume up', 'volume down', 'set volume to 50', 'status', 'timer 10 minutes', 'bluetooth', 'wifi', or 'switch audio to headphones'.",
             user_text.chars().take(60).collect::<String>()
         )
     }

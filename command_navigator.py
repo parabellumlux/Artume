@@ -46,7 +46,16 @@ class AudioCommandNavigator:
                 "Say 'open code earcons.py' to load a script. "
                 "Say 'read function play_earcon' to inspect code. "
                 "Say 'read lines 1 to 20' to inspect line range. "
-                "Say 'run tests' or 'explain code'."
+                "AI Assistant: say 'fix this', 'explain this', 'generate tests', "
+                "'review code', 'optimize code', 'add docstring', 'add type hints', "
+                "'refactor code'. "
+                "Git: say 'git status', 'git diff', 'git log', 'git branch', "
+                "'git commit message', 'git push', 'git pull', "
+                "'git switch to branch-name'. "
+                "Terminal: say 'run tests', 'run file', 'run make build', "
+                "'run command ls', 'stop', 'show terminal', 'clear terminal'. "
+                "IDE Daemon: say 'code structure', 'code summary', 'where am i'. "
+                "Say 'what can I say' to hear this list again."
             ),
             "FILES": (
                 "Audio File Browser Mode Commands. "

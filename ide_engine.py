@@ -4,6 +4,7 @@
 import os
 import ast
 import traceback
+from earcons import play_earcon
 
 class AudioIDE:
     """Voice-first code navigator, editor, and traceback summarizer for Artome OS."""
@@ -30,6 +31,12 @@ class AudioIDE:
             classes = [node.name for node in ast.walk(parsed_ast) if isinstance(node, ast.ClassDef)]
             functions = [node.name for node in ast.walk(parsed_ast) if isinstance(node, ast.FunctionDef)]
             total_lines = len(code_content.splitlines())
+
+            # Play earcons for code structure awareness
+            if classes:
+                play_earcon("scope_enter_class")
+            if functions:
+                play_earcon("scope_enter_function")
 
             summary = f"Opened {filename}. Total {total_lines} lines. "
             if classes:
@@ -60,8 +67,10 @@ class AudioIDE:
                     start_line = node.lineno
                     end_line = node.end_lineno
                     func_code = "".join(lines[start_line - 1:end_line])
+                    play_earcon("scope_enter_function")
                     return f"Function {function_name} from line {start_line} to {end_line}: {func_code}"
 
+            play_earcon("no_match")
             return f"Function {function_name} not found in {os.path.basename(self.active_file)}."
         except Exception as e:
             return f"Error reading function: {str(e)[:50]}"
@@ -83,6 +92,7 @@ class AudioIDE:
 
     def summarize_traceback(self, traceback_str):
         """Summarize stack trace error into plain English speech."""
+        play_earcon("error")
         lines = [l.strip() for l in traceback_str.splitlines() if l.strip()]
         if not lines:
             return "No error traceback recorded."

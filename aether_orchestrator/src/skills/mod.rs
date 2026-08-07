@@ -500,7 +500,7 @@ impl Skill for SystemCommandSkill {
         let text = user_text.to_string();
         Box::pin(async move {
             format!(
-                "System command received: \"{}\". Volume and settings control coming soon.",
+                "System command: \"{}\". Use 'volume up', 'volume down', 'set volume to 50', 'status', 'timer 10 minutes', 'bluetooth', 'wifi', or 'switch audio to headphones'.",
                 text.chars().take(60).collect::<String>()
             )
         })

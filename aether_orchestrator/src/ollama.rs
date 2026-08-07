@@ -8,7 +8,7 @@
 //! - **Tier 3** (CPU): nomic-embed-text — embeddings
 
 use anyhow::{Context, Result};
-use log::{debug, info};
+use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
@@ -335,6 +335,10 @@ impl OllamaClient {
     }
 
     /// Quick classification using the router model on the 1650S.
+    ///
+    /// Returns the intent label string, or empty string if classification
+    /// fails or the model returns nothing (Nemotron often returns "" for
+    /// simple inputs — the router handles this gracefully).
     pub async fn classify_intent(&self, utterance: &str) -> Result<String> {
         let prompt = format!(
             "Classify this user utterance into exactly one intent label. \
@@ -344,14 +348,38 @@ impl OllamaClient {
             utterance
         );
 
-        self.chat(
-            &OllamaModel::ROUTER,
-            &prompt,
-            None,
-            0.0, // greedy for classification
-            32,
+        // Try with a short timeout — if Nemotron returns empty or times out,
+        // return empty string so the router can fall back to keyword matching.
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            self.chat(
+                &OllamaModel::ROUTER,
+                &prompt,
+                None,
+                0.0, // greedy for classification
+                32,
+            ),
         )
         .await
+        {
+            Ok(Ok(response)) => {
+                let trimmed = response.trim().to_string();
+                if trimmed.is_empty() || trimmed.len() > 50 {
+                    // Nemotron returned empty or garbage — let router handle it
+                    Ok(String::new())
+                } else {
+                    Ok(trimmed)
+                }
+            }
+            Ok(Err(e)) => {
+                warn!("Ollama classify_intent error: {e}");
+                Ok(String::new()) // Return empty, router will fallback
+            }
+            Err(_) => {
+                warn!("Ollama classify_intent timed out after 8s");
+                Ok(String::new()) // Timeout — return empty, router will fallback
+            }
+        }
     }
 }
 

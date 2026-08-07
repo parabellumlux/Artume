@@ -8,5 +8,6 @@ members = [
     "aether_browser",
     "aether_buffer",
     "aether_orchestrator",
+    "aether_ide",
 ]
 resolver = "2"
