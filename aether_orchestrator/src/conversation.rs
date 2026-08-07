@@ -8,7 +8,7 @@
 //! a conversation rather than a menu system.
 
 use crate::file_search::FileSearchClient;
-use crate::ollama::{OllamaClient, OllamaModel, ToolCallResult, ToolDef, ToolFunction};
+use crate::ollama::{OllamaClient, OllamaModel};
 use crate::profile::UserProfile;
 use crate::router::{Intent, IntentRouter, RouterConfig};
 #[cfg(feature = "stt")]
@@ -542,19 +542,17 @@ impl ConversationLoop {
             .collect()
     }
 
-    /// Single-pass conversational handler.
+    /// Conversational handler.
     ///
-    /// One call to the 8B with tool definitions. The model either:
-    ///   (a) emits a tool call (act) — we execute it and return a short
-    ///       confirmation, or
-    ///   (b) emits a plain conversational response (converse).
+    /// Uses the plain streaming chat call on the 8B (no tool definitions).
+    /// Commands ("set volume to 30", "switch to browser", "search files")
+    /// are handled deterministically by the label-router fast path in
+    /// `process_turn` — which is both faster and more reliable than
+    /// tool-calling (measured: ~350ms vs 2300ms+).
     ///
-    /// If the tool call is malformed or the model errors, we fall back to the
-    /// deterministic label router, then to a template. This never returns
-    /// empty speech.
-    ///
-    /// When `on_token` is provided, text tokens are streamed to it as they
-    /// arrive (for TTS), so speech can start before the response completes.
+    /// Text tokens are streamed to `on_token` as they arrive (for TTS), so
+    /// speech can start before the response completes. Falls back to a
+    /// template on model error.
     async fn handle_conversation(
         &mut self,
         user_text: &str,
@@ -563,61 +561,24 @@ impl ConversationLoop {
         let owned = self.build_messages(user_text).await;
         let messages = Self::as_ref_messages(&owned);
 
-        // Single-pass tool-calling on the 8B (streaming when a callback is given).
+        // Plain chat call — streamed when a callback is given.
         let result = if let Some(cb) = on_token.as_deref_mut() {
             self.ollama
-                .chat_with_tools_stream(
-                    &OllamaModel::REASONING,
-                    &messages,
-                    &self.tool_definitions(),
-                    0.7,
-                    512,
-                    cb,
-                )
+                .chat_stream(&OllamaModel::REASONING, &messages, 0.7, 512, cb)
                 .await
         } else {
             self.ollama
-                .chat_with_tools(
-                    &OllamaModel::REASONING,
-                    &messages,
-                    &self.tool_definitions(),
-                    0.7,
-                    512,
-                )
+                .chat_with_messages(&OllamaModel::REASONING, &messages, 0.7, 512)
                 .await
         };
 
         match result {
-            Ok(ToolCallResult::Response(text)) if !text.trim().is_empty() => text,
-            Ok(ToolCallResult::ToolCall { name, arguments }) => {
-                // Guard against malformed tool calls (e.g. the model emitting
-                // `{"name": "<nil>"}` or an unknown tool). Fall back to the
-                // label router rather than returning a generic message.
-                if self.is_known_tool(&name) {
-                    info!("ToolCall: {name} {arguments}");
-                    self.execute_tool_call(&name, &arguments).await
-                } else {
-                    warn!("ToolCall: malformed/unknown tool '{name}' — falling back to label router");
-                    self.fallback_router(user_text).await
-                }
-            }
-            Ok(ToolCallResult::Response(_)) => {
-                // Empty response — fall back to the label router.
-                self.fallback_router(user_text).await
-            }
-            Err(e) => {
-                warn!("Ollama[1080] single-pass failed: {e} — falling back to label router");
-                self.fallback_router(user_text).await
+            Ok(response) if !response.trim().is_empty() => response,
+            _ => {
+                warn!("Ollama[1080] conversation failed — using template fallback");
+                self.template_conversation(user_text)
             }
         }
-    }
-
-    /// Whether a tool name is one we actually implement.
-    fn is_known_tool(&self, name: &str) -> bool {
-        matches!(
-            name,
-            "set_volume" | "switch_mode" | "search_files" | "get_time"
-        )
     }
 
     /// Fallback path: classify via the label router, then dispatch. Used when
@@ -645,95 +606,6 @@ impl ConversationLoop {
             Intent::SystemCommand => self.handle_system_command(user_text),
             Intent::SwitchMode => self.handle_switch_mode(user_text),
             Intent::Unknown => self.handle_unknown(user_text),
-        }
-    }
-
-    /// The tool definitions exposed to the 8B for single-pass act-or-converse.
-    fn tool_definitions(&self) -> Vec<ToolDef> {
-        use serde_json::json;
-        vec![
-            ToolDef {
-                r#type: "function",
-                function: ToolFunction {
-                    name: "set_volume",
-                    description: "Set the system volume to a level between 0 and 100.",
-                    parameters: json!({
-                        "type": "object",
-                        "properties": {
-                            "level": {"type": "integer", "minimum": 0, "maximum": 100}
-                        },
-                        "required": ["level"]
-                    }),
-                },
-            },
-            ToolDef {
-                r#type: "function",
-                function: ToolFunction {
-                    name: "switch_mode",
-                    description: "Switch the active mode to browser, email, ide, files, docs, settings, ebook, or desktop.",
-                    parameters: json!({
-                        "type": "object",
-                        "properties": {
-                            "mode": {"type": "string", "enum": ["browser", "email", "ide", "files", "docs", "settings", "ebook", "desktop"]}
-                        },
-                        "required": ["mode"]
-                    }),
-                },
-            },
-            ToolDef {
-                r#type: "function",
-                function: ToolFunction {
-                    name: "search_files",
-                    description: "Search the local file index for files matching a query.",
-                    parameters: json!({
-                        "type": "object",
-                        "properties": {
-                            "query": {"type": "string"}
-                        },
-                        "required": ["query"]
-                    }),
-                },
-            },
-            ToolDef {
-                r#type: "function",
-                function: ToolFunction {
-                    name: "get_time",
-                    description: "Get the current local time.",
-                    parameters: json!({"type": "object", "properties": {}}),
-                },
-            },
-        ]
-    }
-
-    /// Execute a tool call emitted by the model and return a spoken response.
-    async fn execute_tool_call(&mut self, name: &str, arguments: &serde_json::Value) -> String {
-        match name {
-            "set_volume" => {
-                let level = arguments.get("level").and_then(|v| v.as_i64()).unwrap_or(0);
-                format!("Setting volume to {} percent.", level)
-            }
-            "switch_mode" => {
-                let mode = arguments
-                    .get("mode")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("desktop");
-                format!("Switching to {} mode.", mode)
-            }
-            "search_files" => {
-                let query = arguments
-                    .get("query")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                self.handle_file_search(query).await
-            }
-            "get_time" => {
-                let now = chrono::Local::now();
-                format!("The current time is {}.", now.format("%I:%M %p"))
-            }
-            other => {
-                warn!("Unknown tool call: {other}");
-                "I'm not sure how to do that yet.".to_string()
-            }
         }
     }
 
