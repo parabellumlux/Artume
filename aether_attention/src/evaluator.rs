@@ -1,4 +1,4 @@
-//! AetherOS Cognitive Load Evaluator
+//! Artume Cognitive Load Evaluator
 //!
 //! Tracks the user's current focus level and rates incoming events using
 //! a heuristic score to decide whether to deliver immediately, queue, or

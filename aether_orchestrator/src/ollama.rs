@@ -1,4 +1,4 @@
-//! AetherOS Ollama Backend
+//! Artume Ollama Backend
 //!
 //! Wraps the Ollama HTTP API to run models on specific GPUs.
 //! Routes requests to the correct GPU based on model tier:

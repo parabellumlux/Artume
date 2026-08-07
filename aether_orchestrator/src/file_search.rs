@@ -1,4 +1,4 @@
-//! AetherOS File Search Client
+//! Artume File Search Client
 //!
 //! Connects to the aetherfs-core gRPC daemon over Unix Domain Socket
 //! to perform voice search queries against the file index.

@@ -1,4 +1,4 @@
-//! AetherOS Audio-First IDE Daemon
+//! Artume Audio-First IDE Daemon
 //!
 //! Runs as a background daemon, providing:
 //! - Tree-sitter based code parsing
@@ -30,7 +30,7 @@ async fn main() -> anyhow::Result<()> {
                 });
             }
             "--help" | "-h" => {
-                println!("AetherOS Audio-First IDE Daemon");
+                println!("Artume Audio-First IDE Daemon");
                 println!();
                 println!("Usage: aether-ide-daemon [--socket <path>]");
                 println!();
@@ -48,7 +48,7 @@ async fn main() -> anyhow::Result<()> {
         i += 1;
     }
 
-    log::info!("AetherOS IDE Daemon starting...");
+    log::info!("Artume IDE Daemon starting...");
     log::info!("Socket: {}", socket_path);
 
     let state = Arc::new(IdeServerState::new());

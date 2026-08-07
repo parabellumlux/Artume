@@ -1,4 +1,4 @@
-//! AetherOS Rolling Ring-Buffer Transcript
+//! Artume Rolling Ring-Buffer Transcript
 //!
 //! A lock-free, bounded circular queue storing timestamped audio transcript
 //! tokens. Maintains the last 5 minutes of conversation by default.

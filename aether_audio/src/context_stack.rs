@@ -1,4 +1,4 @@
-//! AetherOS Audio Context Stack
+//! Artume Audio Context Stack
 //!
 //! A thread-safe LIFO stack managing active voice and audio stream contexts.
 //!

@@ -1,4 +1,4 @@
-//! AetherOS Headless Browser Engine
+//! Artume Headless Browser Engine
 //!
 //! Fetches web pages using `reqwest` (HTTP client) and extracts the DOM
 //! using `scraper`. Blocks trackers, images, ads, and stylesheets by

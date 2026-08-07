@@ -1,4 +1,4 @@
-//! AetherOS Pending Notification Queue
+//! Artume Pending Notification Queue
 //!
 //! A bounded queue that holds notifications suppressed during high-focus
 //! periods. When the user returns to `Idle`, `batch_summarize()` generates

@@ -1,4 +1,4 @@
-//! AetherOS Audio-First IDE
+//! Artume Audio-First IDE
 //!
 //! Core library for the audio-first IDE. Provides:
 //! - Tree-sitter based code parsing and structure extraction

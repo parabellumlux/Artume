@@ -1,10 +1,10 @@
-//! AetherOS Conversation Loop
+//! Artume Conversation Loop
 //!
 //! The main conversational loop that ties all subsystems together:
 //!
 //! 1. Listen (STT) → 2. Classify (Router) → 3. Dispatch → 4. Respond (TTS)
 //!
-//! This is the top-level orchestrator that makes AetherOS feel like
+//! This is the top-level orchestrator that makes Artume feel like
 //! a conversation rather than a menu system.
 
 use crate::file_search::FileSearchClient;
@@ -971,7 +971,7 @@ impl ConversationLoop {
     fn template_conversation(&self, user_text: &str) -> String {
         let lower = user_text.to_lowercase();
         if lower.contains("hello") || lower.contains("hi ") || lower.contains("hey") {
-            "Hello! I'm AetherOS. How can I help you today?".to_string()
+            "Hello! I'm Artume. How can I help you today?".to_string()
         } else if lower.contains("how are you") {
             "I'm doing well! Ready to help with whatever you need.".to_string()
         } else if lower.contains("thank") || lower.contains("thanks") {
@@ -982,7 +982,7 @@ impl ConversationLoop {
             let now = chrono::Local::now();
             format!("The current time is {}.", now.format("%I:%M %p"))
         } else if lower.contains("name") || lower.contains("who are you") {
-            "I'm AetherOS, your voice-controlled operating system assistant.".to_string()
+            "I'm Artume, your voice-controlled operating system assistant.".to_string()
         } else {
             format!(
                 "I heard you say: \"{}\". I'm still learning, but I'm getting better every day!",

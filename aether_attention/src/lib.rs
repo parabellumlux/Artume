@@ -1,4 +1,4 @@
-//! AetherOS Intelligent Attention Manager
+//! Artume Intelligent Attention Manager
 //!
 //! Acts as a cognitive load governor — intercepts all incoming system
 //! alerts and evaluates whether to drop, queue, or speak them based on

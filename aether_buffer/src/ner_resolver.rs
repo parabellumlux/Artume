@@ -1,4 +1,4 @@
-//! AetherOS Named Entity Recognition & Contextual Query Resolver
+//! Artume Named Entity Recognition & Contextual Query Resolver
 //!
 //! Runs a light local NER parser (regex patterns) across incoming buffer
 //! text to continuously tag entities: PhoneNumbers, Addresses, Dates/Times,

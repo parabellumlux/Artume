@@ -1,4 +1,4 @@
-//! AetherOS Conversational Shell
+//! Artume Conversational Shell
 //!
 //! Full-duplex conversational shell that:
 //! - Polls for wake word detection (background thread)
@@ -67,7 +67,7 @@ async fn main() -> anyhow::Result<()> {
 
     println!();
     println!("╔══════════════════════════════════════════════╗");
-    println!("║        AetherOS Conversational Shell         ║");
+    println!("║        Artume Conversational Shell         ║");
     println!("║   Dual-GPU AI Pipeline (1080 + 1650S)       ║");
     println!("╚══════════════════════════════════════════════╝");
     println!();
@@ -188,7 +188,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Power-on prompt: let the user know the system is up and listening.
     // Spoken through TTS if audio is available, always printed to the console.
-    let power_on = "AetherOS is online and listening. Say the wake word or type a message to begin.";
+    let power_on = "Artume is online and listening. Say the wake word or type a message to begin.";
     println!("Aether > {power_on}");
     if let Some(ref tts) = tts {
         tts.speak(power_on);

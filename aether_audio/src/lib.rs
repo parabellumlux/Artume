@@ -1,6 +1,6 @@
-//! AetherOS Spatial Audio Engine
+//! Artume Spatial Audio Engine
 //!
-//! This crate provides the core audio subsystem for AetherOS:
+//! This crate provides the core audio subsystem for Artume:
 //!
 //! - **Spatial Mixer** — PipeWire-integrated binaural spatial audio mixer
 //!   using HRTF-based ITD/IID processing for 3D headphone rendering.

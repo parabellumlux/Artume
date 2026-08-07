@@ -1,4 +1,4 @@
-//! AetherOS Intent Router
+//! Artume Intent Router
 //!
 //! Classifies user utterances into intents using the Llama 3.1 8B
 //! model on the GTX 1080 via Ollama. This replaces the menu hierarchy

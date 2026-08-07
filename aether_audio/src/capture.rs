@@ -1,4 +1,4 @@
-//! AetherOS Microphone Capture
+//! Artume Microphone Capture
 //!
 //! Captures audio from the default microphone after wake word detection.
 //! Records until silence is detected (simple energy-based VAD) or a timeout.

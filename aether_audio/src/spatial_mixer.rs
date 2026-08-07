@@ -1,4 +1,4 @@
-//! AetherOS Spatial Audio Mixer
+//! Artume Spatial Audio Mixer
 //!
 //! Wraps the PipeWire audio graph to map multi-channel virtual sources
 //! into binaural 3D space using HRTF-based spatialisation.
@@ -361,7 +361,7 @@ impl SpatialMixer {
     /// audio in real-time. Blocks until the main loop is quit.
     ///
     /// The stream connection registers this mixer as a virtual audio sink
-    /// named "AetherOS Spatial Mixer" in the PipeWire graph.
+    /// named "Artume Spatial Mixer" in the PipeWire graph.
     ///
     /// Note: This requires a running PipeWire daemon on the system.
     /// The implementation uses `pipewire` crate 0.10's stream API.

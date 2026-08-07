@@ -1,4 +1,4 @@
-//! AetherOS Skill System
+//! Artume Skill System
 //!
 //! A skill is a self-contained capability that Artume can discover, load,
 //! and dispatch to. Skills declare what intents they handle and provide

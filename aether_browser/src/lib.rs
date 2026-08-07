@@ -1,4 +1,4 @@
-//! AetherOS Headless Semantic Web Browser
+//! Artume Headless Semantic Web Browser
 //!
 //! Converts complex websites into clean, conversational audio streams.
 //!

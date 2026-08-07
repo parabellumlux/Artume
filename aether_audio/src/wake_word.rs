@@ -1,4 +1,4 @@
-//! AetherOS Wake Word Detection
+//! Artume Wake Word Detection
 //!
 //! Runs OpenWakeWord ONNX models on CPU via tract-onnx to detect a wake word
 //! from the microphone input. Runs on a background thread and signals the

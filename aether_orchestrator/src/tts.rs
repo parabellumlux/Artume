@@ -1,4 +1,4 @@
-//! AetherOS Text-to-Speech Engine
+//! Artume Text-to-Speech Engine
 //!
 //! Uses Kokoro-82M via a Python subprocess bridge for high-quality speech
 //! synthesis on CPU. The Python bridge script handles model loading and

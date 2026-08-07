@@ -1,4 +1,4 @@
-//! AetherOS Speech-to-Text Engine
+//! Artume Speech-to-Text Engine
 //!
 //! Wraps `whisper-rs` to transcribe audio from the microphone or audio
 //! files using Whisper tiny.en on CPU.

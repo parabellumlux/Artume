@@ -1,4 +1,4 @@
-//! AetherOS Audio Output Sink
+//! Artume Audio Output Sink
 //!
 //! Plays PCM audio samples to the default audio output device using cpal,
 //! or to a named PulseAudio sink via pacat subprocess.

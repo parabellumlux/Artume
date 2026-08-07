@@ -1,4 +1,4 @@
-//! AetherOS Event Ingestion Pipeline
+//! Artume Event Ingestion Pipeline
 //!
 //! Typed system events flowing through Tokio MPSC channels.
 

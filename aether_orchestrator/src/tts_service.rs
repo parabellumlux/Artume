@@ -1,4 +1,4 @@
-//! AetherOS TTS Service
+//! Artume TTS Service
 //!
 //! Runs Piper TTS synthesis in a dedicated background thread so it never
 //! blocks the main async loop. Accepts text via a channel, synthesizes,

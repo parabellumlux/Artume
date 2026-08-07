@@ -1,6 +1,6 @@
-//! AetherOS Conversational Orchestrator
+//! Artume Conversational Orchestrator
 //!
-//! The central nervous system of AetherOS — routes natural-language input
+//! The central nervous system of Artume — routes natural-language input
 //! through the dual-GPU AI stack:
 //!
 //! ```text

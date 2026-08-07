@@ -1,4 +1,4 @@
-//! AetherOS DOM Semantic Extractor & Conversational Formatter
+//! Artume DOM Semantic Extractor & Conversational Formatter
 //!
 //! Applies a Readability-style algorithm to isolate primary body content
 //! from a web page, then converts it into a speech-ready script.

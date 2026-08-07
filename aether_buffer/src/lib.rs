@@ -1,4 +1,4 @@
-//! AetherOS Audio Context Buffer (Scratchpad)
+//! Artume Audio Context Buffer (Scratchpad)
 //!
 //! Enables speech referencing like "Copy that tracking number" or "Save
 //! the phone number she just said."
