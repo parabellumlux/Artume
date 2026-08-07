@@ -27,6 +27,8 @@ pub enum Intent {
     ExecuteAction,
     /// System command (volume, settings, help).
     SystemCommand,
+    /// Switch the active mode (browser, email, ide, files, docs, settings, ebook).
+    SwitchMode,
     /// Unknown / unclear intent.
     Unknown,
 }
@@ -40,6 +42,7 @@ impl Intent {
             Self::FileSearch => "file_search",
             Self::ExecuteAction => "execute_action",
             Self::SystemCommand => "system_command",
+            Self::SwitchMode => "switch_mode",
             Self::Unknown => "unknown",
         }
     }
@@ -54,6 +57,7 @@ impl Intent {
             "file_search" | "filesearch" | "search" | "file" | "find" => Self::FileSearch,
             "execute_action" | "executeaction" | "action" | "execute" => Self::ExecuteAction,
             "system_command" | "systemcommand" | "command" | "system" => Self::SystemCommand,
+            "switch_mode" | "switchmode" | "switch" | "mode" => Self::SwitchMode,
             _ => {
                 // Also check if the label is embedded in a longer response
                 if lower.contains("conversation") || lower.contains("chat") || lower.contains("talk") {
@@ -196,6 +200,7 @@ mod tests {
         assert_eq!(Intent::from_label("search"), Intent::FileSearch);
         assert_eq!(Intent::from_label("execute_action"), Intent::ExecuteAction);
         assert_eq!(Intent::from_label("system_command"), Intent::SystemCommand);
+        assert_eq!(Intent::from_label("switch_mode"), Intent::SwitchMode);
         assert_eq!(Intent::from_label("garbage"), Intent::Unknown);
         // Fuzzy matching
         assert_eq!(Intent::from_label("this is a conversation"), Intent::Conversation);

@@ -396,6 +396,7 @@ impl ConversationLoop {
             Intent::FileSearch => self.handle_file_search(user_text).await,
             Intent::ExecuteAction => self.handle_execute_action(user_text),
             Intent::SystemCommand => self.handle_system_command(user_text),
+            Intent::SwitchMode => self.handle_switch_mode(user_text),
             Intent::Unknown => self.handle_unknown(user_text),
         };
 
@@ -662,6 +663,26 @@ impl ConversationLoop {
             "System command: \"{}\". Use 'volume up', 'volume down', 'set volume to 50', 'status', 'timer 10 minutes', 'bluetooth', 'wifi', or 'switch audio to headphones'.",
             user_text.chars().take(60).collect::<String>()
         )
+    }
+
+    fn handle_switch_mode(&mut self, user_text: &str) -> String {
+        let lower = user_text.to_lowercase();
+        let modes = [
+            ("browser", "browser"),
+            ("email", "email"),
+            ("ide", "IDE"),
+            ("files", "files"),
+            ("docs", "documents"),
+            ("settings", "settings"),
+            ("ebook", "ebook reader"),
+            ("desktop", "desktop"),
+        ];
+        for (keyword, label) in modes {
+            if lower.contains(keyword) {
+                return format!("Switching to {} mode.", label);
+            }
+        }
+        "I can switch to browser, email, IDE, files, documents, settings, or ebook mode.".to_string()
     }
 
     fn handle_unknown(&mut self, _user_text: &str) -> String {

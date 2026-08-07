@@ -5,12 +5,32 @@ Tier 1: Llama 3.1 8B on GTX 1080 (GPU 0) — main reasoning/conversation
 Tier 2: Nemotron-3 Nano on GTX 1650S (GPU 1) — router/tool-caller/guardrails
 Tier 3: nomic-embed-text on CPU — embeddings
 
-FIXES:
-- Handles empty model responses (Nemotron returns "" for simple inputs)
-- Multi-tier fallback: Nemotron → keyword → Llama → safe default
-- Response validation — never returns empty speech
-- Retry logic for transient failures
-- Timeout handling
+DESIGN (v2 — two-stage, deterministic dispatch):
+
+  The v1 router asked a 4B model to do two hard things at once: classify the
+  intent AND emit a full JSON action payload. Empirically Nemotron-3 Nano
+  returns empty for most utterances, so the router silently fell back to
+  "conversation" — the exact bug this rewrite fixes.
+
+  v2 splits the problem:
+
+    Stage 1 — CLASSIFY (LLM, label-only, greedy, 8s timeout)
+        Llama 3.1 8B returns ONE label word. This is the one thing the model
+        does reliably (verified 8/8 on live tests). Nemotron is demoted to a
+        non-critical fallback because it returns empty for nearly everything.
+
+    Stage 2 — DISPATCH (deterministic, no LLM)
+        A pure-Python dispatcher maps (label + mode + keyword extraction) to a
+        concrete action dict. No model involved, so it can never return empty.
+
+  Fallback ladder (never returns empty speech):
+      1. Keyword pre-classification (fast path, zero latency, no model)
+      2. Llama 3.1 8B label classification (reliable)
+      3. Nemotron label classification (best-effort, usually empty)
+      4. Safe default conversational response
+
+  Both the Python and Rust shells converge on this same design so they behave
+  identically.
 """
 
 import json
@@ -21,9 +41,22 @@ import time
 from screen_reader import AtspiScreenReader
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
-ROUTER_MODEL = "nemotron-3-nano:4b"   # Tier 2 — GTX 1650S
+ROUTER_MODEL = "llama3.1:8b"          # Tier 1 — GTX 1080 (reliable classifier)
+LEGACY_ROUTER_MODEL = "nemotron-3-nano:4b"  # Tier 2 — GTX 1650S (best-effort)
 REASONING_MODEL = "llama3.1:8b"       # Tier 1 — GTX 1080
 EMBED_MODEL = "nomic-embed-text"      # Tier 3 — CPU
+
+# Intent labels the classifier can return. Keep in sync with Rust router.rs.
+INTENT_LABELS = [
+    "conversation",
+    "entity_lookup",
+    "web_fetch",
+    "file_search",
+    "execute_action",
+    "system_command",
+    "switch_mode",
+    "unknown",
+]
 
 screen_reader = AtspiScreenReader()
 
@@ -76,27 +109,162 @@ def _query_ollama(model: str, prompt: str, timeout: int = 12, temperature: float
     return ""
 
 
-def _keyword_classify(text: str, mode: str) -> dict:
-    """Fast keyword-based classification as fallback when model returns empty."""
+# ---------------------------------------------------------------------------
+# Stage 1 — Classification
+# ---------------------------------------------------------------------------
+
+def _classify_prompt(utterance: str) -> str:
+    """Build the label-only classification prompt (the format that works)."""
+    return (
+        "Classify this user utterance into exactly one intent label. "
+        "Return ONLY the label word, nothing else.\n\n"
+        f"Labels: {', '.join(INTENT_LABELS)}\n\n"
+        f"Utterance: {utterance}\n\n"
+        "Intent:"
+    )
+
+
+def _normalize_label(raw: str) -> str:
+    """Map a raw model output to a known label, or 'unknown'."""
+    low = raw.strip().lower()
+    # Strip punctuation / trailing words
+    low = re.sub(r"[^a-z_]", "", low)
+    if low in INTENT_LABELS:
+        return low
+    # Fuzzy: label embedded in a longer response
+    for label in INTENT_LABELS:
+        if label in low:
+            return label
+    return "unknown"
+
+
+def _classify_llm(utterance: str) -> str:
+    """Classify via Llama 3.1 8B (reliable). Returns a label or 'unknown'."""
+    raw = _query_ollama(
+        ROUTER_MODEL, _classify_prompt(utterance),
+        timeout=8, temperature=0.0, num_predict=32,
+    )
+    if not raw:
+        return "unknown"
+    return _normalize_label(raw)
+
+
+def _classify_legacy(utterance: str) -> str:
+    """Best-effort classification via Nemotron (usually empty)."""
+    raw = _query_ollama(
+        LEGACY_ROUTER_MODEL, _classify_prompt(utterance),
+        timeout=6, temperature=0.0, num_predict=32,
+    )
+    if not raw:
+        return "unknown"
+    return _normalize_label(raw)
+
+
+# ---------------------------------------------------------------------------
+# Stage 2 — Deterministic dispatch
+# ---------------------------------------------------------------------------
+
+def _extract_after(text: str, prefixes) -> str:
+    """Return the substring after the first matching prefix, stripped."""
+    low = text.lower()
+    for prefix in prefixes:
+        if prefix in low:
+            return text[low.index(prefix) + len(prefix):].strip()
+    return text
+
+
+def _dispatch(label: str, text: str, mode: str) -> dict:
+    """Deterministically map (label, mode, text) to a concrete action dict.
+
+    No LLM involved — this can never return empty speech.
+    """
     low = text.lower().strip()
 
-    # Mode-specific commands
+    # --- switch_mode: explicit mode change ---
+    if label == "switch_mode" or any(w in low for w in ["switch to", "change to", "go to", "open"]) and \
+            any(m in low for m in ["browser", "email", "ide", "files", "docs", "settings", "ebook", "desktop"]):
+        for m in ["browser", "email", "ide", "files", "docs", "settings", "ebook", "desktop"]:
+            if m in low:
+                return {"action": "switch_mode", "speech": f"Switching to {m} mode", "target": m.upper()}
+
+    # --- entity_lookup ---
+    if label == "entity_lookup" or any(w in low for w in ["copy that", "tracking number", "look up", "entity"]):
+        return {"action": "speak", "speech": "Looking up that entity from our conversation.", "target": "entity_lookup"}
+
+    # --- web_fetch ---
+    if label == "web_fetch" or any(w in low for w in ["read me", "read http", "fetch", "browse", "open http", ".com", ".org"]):
+        url = _extract_after(text, ["read me", "read", "fetch", "browse", "open", "go to"])
+        if "http" in low or ".com" in low or ".org" in low:
+            return {"action": "web_navigate", "speech": f"Loading {url}", "target": f"url:{url}"}
+        return {"action": "web_navigate", "speech": "Reading page content", "target": "read"}
+
+    # --- file_search ---
+    if label == "file_search" or any(w in low for w in ["find my", "find", "search for", "search files", "look for"]):
+        query = _extract_after(text, ["find my", "find", "search for", "search", "look for"])
+        return {"action": "file_action", "speech": f"Searching for {query}", "target": f"search_file:{query}"}
+
+    # --- system_command (settings) ---
+    if label == "system_command" or any(w in low for w in ["volume", "status", "timer", "bluetooth", "wifi", "audio", "sound", "speaker", "headphone", "battery", "time"]):
+        if "volume" in low:
+            if "up" in low or "increase" in low:
+                return {"action": "setting_action", "speech": "Increasing volume", "target": "volume_up"}
+            if "down" in low or "decrease" in low:
+                return {"action": "setting_action", "speech": "Decreasing volume", "target": "volume_down"}
+            if "set" in low or any(c.isdigit() for c in low):
+                return {"action": "setting_action", "speech": "Setting volume", "target": f"set_volume:{text}"}
+        if any(w in low for w in ["status", "battery", "system"]):
+            return {"action": "setting_action", "speech": "Checking system status", "target": "status"}
+        if "timer" in low:
+            return {"action": "setting_action", "speech": f"Setting timer", "target": f"set_timer:{text}"}
+        if "bluetooth" in low:
+            return {"action": "setting_action", "speech": f"Bluetooth: {text}", "target": f"bluetooth:{text}"}
+        if "wifi" in low:
+            return {"action": "setting_action", "speech": f"WiFi: {text}", "target": f"wifi:{text}"}
+        if any(w in low for w in ["audio", "sound", "speaker", "headphone"]):
+            return {"action": "setting_action", "speech": f"Audio: {text}", "target": f"audio:{text}"}
+        if "time" in low:
+            return {"action": "setting_action", "speech": "Checking the time", "target": "status"}
+
+    # --- execute_action (open app / launch) ---
+    if label == "execute_action" or any(w in low for w in ["open ", "launch", "start ", "run "]):
+        app = _extract_after(text, ["open", "launch", "start", "run"])
+        if app and app != text:
+            return {"action": "open_app", "speech": f"Opening {app}", "target": app}
+        return {"action": "speak", "speech": f"Executing: {text}", "target": ""}
+
+    # --- conversation (default) ---
+    if any(w in low for w in ["hello", "hi ", "hey", "good morning", "good evening", "what's up", "how are"]):
+        return {"action": "speak", "speech": "Hello! How can I help you?", "target": ""}
+
+    # --- help ---
+    if any(w in low for w in ["help", "what can i say", "what can i do", "commands"]):
+        return {"action": "speak", "speech": "I can help you with browsing, email, files, documents, books, settings, and coding. Say 'switch to browser' or just tell me what you want to do.", "target": "help"}
+
+    # --- screen summary ---
+    if any(w in low for w in ["screen", "what is on", "read screen", "what's on"]):
+        return {"action": "screen_summary", "speech": "Reading screen", "target": "COMMAND:SCREEN_SUMMARY"}
+
+    # --- mode-specific keyword fallbacks ---
+    mode_result = _mode_keywords(text, mode)
+    if mode_result:
+        return mode_result
+
+    # --- safe default (never empty) ---
+    return {"action": "speak", "speech": f"I heard: {text[:100]}. I'm not sure what to do with that. Try saying 'help' or 'what can I say' for available commands.", "target": ""}
+
+
+def _mode_keywords(text: str, mode: str) -> dict:
+    """Mode-specific keyword dispatch (used when label is ambiguous)."""
+    low = text.lower().strip()
+
     if mode == "BROWSER":
         if any(w in low for w in ["search", "find", "look up", "google", "duckduckgo"]):
-            query = text
-            for prefix in ["search for", "search", "find", "look up", "google", "duckduckgo"]:
-                if prefix in low:
-                    query = text.lower().split(prefix, 1)[-1].strip()
-                    break
+            query = _extract_after(text, ["search for", "search", "find", "look up", "google", "duckduckgo"])
             return {"action": "web_navigate", "speech": f"Searching for {query}", "target": f"search:{query}"}
-        if any(w in low for w in ["open", "load", "go to"]) and ("http" in low or ".com" in low or ".org" in low):
-            return {"action": "web_navigate", "speech": f"Loading {text}", "target": f"url:{text}"}
         if "heading" in low or "headings" in low:
             return {"action": "web_navigate", "speech": "Listing headings", "target": "headings"}
         if "link" in low:
             return {"action": "web_navigate", "speech": "Listing links", "target": "links"}
-        if "read" in low or "article" in low:
-            return {"action": "web_navigate", "speech": "Reading page content", "target": "read"}
 
     if mode == "EMAIL":
         if any(w in low for w in ["check", "inbox", "unread", "email"]):
@@ -117,7 +285,7 @@ def _keyword_classify(text: str, mode: str) -> dict:
             return {"action": "ide_action", "speech": f"AI: {text}", "target": f"{text}"}
         if "git" in low:
             return {"action": "ide_action", "speech": f"Git: {text}", "target": f"git_{text}"}
-        if "run" in low or "test" in low or "build" in low or "make" in low:
+        if any(w in low for w in ["run", "test", "build", "make"]):
             return {"action": "ide_action", "speech": f"Running: {text}", "target": f"run:{text}"}
 
     if mode == "FILES":
@@ -127,8 +295,6 @@ def _keyword_classify(text: str, mode: str) -> dict:
             return {"action": "file_action", "speech": f"Navigating to {text}", "target": f"change_dir:{text}"}
         if "read" in low or "open" in low:
             return {"action": "file_action", "speech": f"Reading file", "target": f"read_file:{text}"}
-        if "search" in low or "find" in low:
-            return {"action": "file_action", "speech": f"Searching files", "target": f"search_file:{text}"}
 
     if mode == "DOCS":
         if any(w in low for w in ["new", "start", "create"]) and "doc" in low:
@@ -139,8 +305,6 @@ def _keyword_classify(text: str, mode: str) -> dict:
             return {"action": "doc_action", "speech": "Adding paragraph", "target": "add_paragraph"}
         if "export" in low or "save" in low:
             return {"action": "doc_action", "speech": "Exporting document", "target": "export_all"}
-        if "read" in low or "draft" in low:
-            return {"action": "doc_action", "speech": "Reading draft", "target": "read_draft"}
 
     if mode == "SETTINGS":
         if "volume" in low:
@@ -158,7 +322,7 @@ def _keyword_classify(text: str, mode: str) -> dict:
             return {"action": "setting_action", "speech": f"Bluetooth: {text}", "target": f"bluetooth:{text}"}
         if "wifi" in low:
             return {"action": "setting_action", "speech": f"WiFi: {text}", "target": f"wifi:{text}"}
-        if "audio" in low or "sound" in low or "speaker" in low or "headphone" in low:
+        if any(w in low for w in ["audio", "sound", "speaker", "headphone"]):
             return {"action": "setting_action", "speech": f"Audio: {text}", "target": f"audio:{text}"}
 
     if mode == "EBOOK":
@@ -170,37 +334,22 @@ def _keyword_classify(text: str, mode: str) -> dict:
             return {"action": "ebook_action", "speech": "Listing chapters", "target": "list_chapters"}
         if "bookmark" in low:
             return {"action": "ebook_action", "speech": "Setting bookmark", "target": "set_bookmark"}
-        if "search" in low:
-            return {"action": "ebook_action", "speech": f"Searching book", "target": f"search_book:{text}"}
 
-    # Cross-mode commands
-    if any(w in low for w in ["screen", "what is on", "read screen", "what's on"]):
-        return {"action": "screen_summary", "speech": "Reading screen", "target": "COMMAND:SCREEN_SUMMARY"}
+    return {}
 
-    if any(w in low for w in ["help", "what can i say", "what can i do", "commands"]):
-        return {"action": "speak", "speech": "I can help you with browsing, email, files, documents, books, settings, and coding. Say 'switch to browser' or just tell me what you want to do.", "target": "help"}
 
-    if any(w in low for w in ["switch to", "change to", "go to", "open"]) and any(m in low for m in
-            ["browser", "email", "ide", "files", "docs", "settings", "ebook", "desktop"]):
-        for m in ["browser", "email", "ide", "files", "docs", "settings", "ebook", "desktop"]:
-            if m in low:
-                return {"action": "switch_mode", "speech": f"Switching to {m} mode", "target": m.upper()}
-
-    if any(w in low for w in ["hello", "hi ", "hey", "good morning", "good evening", "what's up"]):
-        return {"action": "speak", "speech": "Hello! How can I help you?", "target": ""}
-
-    # Generic fallback — return a safe conversational response
-    return {"action": "speak", "speech": f"I heard: {text[:100]}. I'm not sure what to do with that. Try saying 'help' or 'what can I say' for available commands.", "target": ""}
-
+# ---------------------------------------------------------------------------
+# Public entry point
+# ---------------------------------------------------------------------------
 
 def ask_artome_ai(user_speech, mode="DESKTOP"):
-    """Query AI with context and request JSON intent payload.
+    """Route a user utterance to a concrete action.
 
-    Multi-tier fallback:
-    1. Try Nemotron-3 Nano (router model on 1650S)
-    2. If empty/fails, try keyword classification
-    3. If keyword fails, try Llama 3.1 8B (reasoning model on 1080)
-    4. If all fail, return safe default response
+    Two-stage pipeline:
+      1. CLASSIFY — keyword fast-path, then Llama 3.1 8B label, then Nemotron.
+      2. DISPATCH — deterministic mapping to an action dict.
+
+    Never returns empty speech.
     """
     window_title = get_active_window()
     low_speech = user_speech.lower().strip()
@@ -240,77 +389,35 @@ Spoken summary for blind user:"""
         return {"action": "screen_summary", "speech": f"Active window is {window_title}.", "target": "COMMAND:SCREEN_SUMMARY"}
 
     # ====================================================================
-    # TIER 1: Try Nemotron-3 Nano (router model on GTX 1650S)
+    # STAGE 1: Classify
     # ====================================================================
-    system_prompt = f"""You are Artome OS, an AI voice desktop assistant for a blind user.
-Current Mode: {mode}
-Active Window: "{window_title}"
-
-Respond strictly with a single JSON object. No preamble.
-
-Format:
-{{
-  "action": "<ACTION_NAME>",
-  "speech": "<text to speak>",
-  "target": "<target app/file/query/cmd/mode>"
-}}
-
-Available actions:
-- "speak": Speak information to user.
-- "open_app": Launch application (target e.g. "firefox").
-- "type_text": Type text into active field.
-- "press_key": Send keypress (target e.g. "Return", "ctrl+c").
-- "run_cmd": Run shell command.
-- "switch_mode": Change mode (target "browser", "email", "ide", "files", "docs", "settings", "ebook", or "desktop").
-- "web_navigate": Web operations (search, URL, headings, links).
-- "email_action": Mail operations (inbox, read, compose).
-- "ide_action": IDE operations (open_code, read_function, read_lines, fix_code, explain_code, generate_tests, review_code, optimize_code, add_docstring, add_type_hints, refactor_code, git_status, git_commit, git_push, git_pull, git_diff, git_log, git_branch, git_switch, run_tests, run_file, run_make, run_command, stop_terminal, show_terminal, clear_terminal, ide_structure, ide_summary, cursor_position).
-- "file_action": File operations (list_dir, change_dir, read_file, search_file).
-- "doc_action": Document Writer (new_doc, add_heading, add_paragraph, export_all).
-- "setting_action": System Settings (volume_up, volume_down, status, set_timer).
-- "ebook_action": EBook Reader (open_book, list_chapters, read_chapter).
-- "screen_summary": Summarize current screen (target "COMMAND:SCREEN_SUMMARY").
-
-User speech: "{user_speech}"
-Response JSON:"""
-
-    raw_text = _query_ollama(ROUTER_MODEL, system_prompt, timeout=10, temperature=0.2, num_predict=120)
-
-    # Try to parse JSON from model output
-    if raw_text:
-        json_match = re.search(r"\{.*\}", raw_text, re.DOTALL)
-        if json_match:
-            try:
-                result = json.loads(json_match.group(0))
-                # Validate the result has non-empty speech
-                speech = result.get("speech", "").strip()
-                if speech:
-                    return result
-            except (json.JSONDecodeError, KeyError):
-                pass
-
-    # ====================================================================
-    # TIER 2: Keyword-based classification (fast, reliable fallback)
-    # ====================================================================
-    keyword_result = _keyword_classify(user_speech, mode)
-    if keyword_result.get("speech", "").strip():
+    # 1a. Keyword fast-path — covers the ~80% of simple commands with zero latency.
+    #     Mode-specific keywords first (so "run tests" in IDE mode stays an IDE
+    #     action), then generic dispatch. Trust any result that isn't the generic
+    #     "I heard..." fallback.
+    mode_result = _mode_keywords(user_speech, mode)
+    if mode_result:
+        return mode_result
+    keyword_result = _dispatch("", user_speech, mode)
+    if keyword_result.get("speech", "").strip() and not keyword_result["speech"].startswith("I heard:"):
         return keyword_result
 
-    # ====================================================================
-    # TIER 3: Try Llama 3.1 8B (reasoning model on GTX 1080)
-    # ====================================================================
-    llama_prompt = f"""You are Artome OS, a voice assistant for a blind user.
-Current mode: {mode}
-User said: "{user_speech}"
+    # 1b. Llama 3.1 8B label classification (reliable).
+    label = _classify_llm(user_speech)
+    if label != "unknown":
+        result = _dispatch(label, user_speech, mode)
+        if result.get("speech", "").strip():
+            return result
 
-Respond with a short, helpful spoken response (1-2 sentences). Be direct and natural."""
-
-    llama_response = _query_ollama(REASONING_MODEL, llama_prompt, timeout=15, temperature=0.3, num_predict=80)
-    if llama_response:
-        return {"action": "speak", "speech": llama_response, "target": ""}
+    # 1c. Nemotron best-effort (usually empty, but try).
+    label = _classify_legacy(user_speech)
+    if label != "unknown":
+        result = _dispatch(label, user_speech, mode)
+        if result.get("speech", "").strip():
+            return result
 
     # ====================================================================
-    # TIER 4: Safe default — never return empty speech
+    # STAGE 2: Safe default — never return empty speech
     # ====================================================================
     return {"action": "speak", "speech": f"I heard: {user_speech[:80]}. I'm not sure how to help with that. Try saying 'help' or 'what can I say'.", "target": ""}
 

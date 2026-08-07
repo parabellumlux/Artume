@@ -92,6 +92,19 @@ check_model "nemotron-3-nano:4b" "1" "Tier 2 — Router (GTX 1650S)"
 check_model "nomic-embed-text"   "" "Tier 3 — Embeddings (CPU)"
 echo ""
 
+# ── 3b. Warm up models (keep resident so first utterance isn't a cold load) ──
+info "Warming up AI models..."
+warm_model() {
+    local name="$1" desc="$2"
+    # Preload with keep_alive=-1 so the model stays resident in VRAM.
+    curl -s http://localhost:11434/api/generate \
+        -d "{\"model\":\"$name\",\"prompt\":\"\",\"stream\":false,\"keep_alive\":-1}" \
+        >/dev/null 2>&1 && ok "$desc warmed up" || warn "$desc warm-up failed"
+}
+warm_model "llama3.1:8b"        "Llama 3.1 8B (reasoning/router)"
+warm_model "nemotron-3-nano:4b" "Nemotron-3 Nano (legacy router)"
+echo ""
+
 # ── 4. Check Python deps (for --python mode) ────────────────────────────────
 if [[ "${1:-}" == "--python" ]]; then
     info "Checking Python dependencies..."

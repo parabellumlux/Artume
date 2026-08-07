@@ -86,8 +86,8 @@ impl OllamaModel {
     };
 
     pub const ROUTER: Self = Self {
-        name: "nemotron-3-nano:4b",
-        gpu: "1",
+        name: "llama3.1:8b",
+        gpu: "0",
         label: "router",
     };
 
@@ -334,17 +334,19 @@ impl OllamaClient {
         Ok(embed_resp.embedding)
     }
 
-    /// Quick classification using the router model on the 1650S.
+    /// Quick classification using the router model.
     ///
     /// Returns the intent label string, or empty string if classification
-    /// fails or the model returns nothing (Nemotron often returns "" for
-    /// simple inputs — the router handles this gracefully).
+    /// fails or the model returns nothing. Uses the label-only prompt format
+    /// (verified reliable on Llama 3.1 8B) — the router handles empty results
+    /// by falling back to keyword matching.
     pub async fn classify_intent(&self, utterance: &str) -> Result<String> {
         let prompt = format!(
             "Classify this user utterance into exactly one intent label. \
              Return ONLY the label word, nothing else.\n\n\
-             Labels: conversation, entity_lookup, web_fetch, file_search, execute_action, system_command\n\n\
-             Utterance: {}\n\nIntent:",
+             Labels: conversation, entity_lookup, web_fetch, file_search, execute_action, system_command, switch_mode\n\n\
+             Utterance: {}\n\n\
+             Intent:",
             utterance
         );
 
@@ -395,8 +397,8 @@ mod tests {
     fn test_ollama_model_constants() {
         assert_eq!(OllamaModel::REASONING.name, "llama3.1:8b");
         assert_eq!(OllamaModel::REASONING.gpu, "0");
-        assert_eq!(OllamaModel::ROUTER.name, "nemotron-3-nano:4b");
-        assert_eq!(OllamaModel::ROUTER.gpu, "1");
+        assert_eq!(OllamaModel::ROUTER.name, "llama3.1:8b");
+        assert_eq!(OllamaModel::ROUTER.gpu, "0");
         assert_eq!(OllamaModel::EMBED.name, "nomic-embed-text");
         assert_eq!(OllamaModel::EMBED.gpu, "");
     }
