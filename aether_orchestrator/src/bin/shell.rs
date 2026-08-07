@@ -186,6 +186,15 @@ async fn main() -> anyhow::Result<()> {
     println!("Type 'quit' or 'exit' to stop.");
     println!();
 
+    // Power-on prompt: let the user know the system is up and listening.
+    // Spoken through TTS if audio is available, always printed to the console.
+    let power_on = "AetherOS is online and listening. Say the wake word or type a message to begin.";
+    println!("Aether > {power_on}");
+    if let Some(ref tts) = tts {
+        tts.speak(power_on);
+    }
+    println!();
+
     loop {
         // Poll for wake word events.
         if let Some(word) = loop_.check_wake_word() {
