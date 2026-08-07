@@ -583,57 +583,65 @@ impl ConversationLoop {
 
     /// Fallback path: classify via the label router, then dispatch. Used when
     /// single-pass tool-calling fails or returns empty.
-    async fn fallback_router(&mut self, user_text: &str) -> String {
-        let intent = self.router.classify(user_text).await;
-        match intent {
-            Intent::Conversation => {
-                // Try a plain (non-tool) chat call; template on failure.
-                let owned = self.build_messages(user_text).await;
-                let messages = Self::as_ref_messages(&owned);
-                match self
-                    .ollama
-                    .chat_with_messages(&OllamaModel::REASONING, &messages, 0.7, 512)
-                    .await
-                {
-                    Ok(response) if !response.trim().is_empty() => response,
-                    _ => self.template_conversation(user_text),
-                }
-            }
-            Intent::EntityLookup => self.handle_entity_lookup(user_text),
-            Intent::WebFetch => self.handle_web_fetch(user_text).await,
-            Intent::FileSearch => self.handle_file_search(user_text).await,
-            Intent::ExecuteAction => self.handle_execute_action(user_text),
-            Intent::SystemCommand => self.handle_system_command(user_text),
-            Intent::SwitchMode => self.handle_switch_mode(user_text),
-            Intent::Unknown => self.handle_unknown(user_text),
-        }
-    }
+    ///
+    /// NOTE: Disabled (commented out) — leftover from the single-pass
+    /// tool-calling experiment (commit 7aa7168). The live path is
+    /// `process_turn_with_callback` → `handle_conversation` → `chat_stream`.
+    // async fn fallback_router(&mut self, user_text: &str) -> String {
+    //     let intent = self.router.classify(user_text).await;
+    //     match intent {
+    //         Intent::Conversation => {
+    //             // Try a plain (non-tool) chat call; template on failure.
+    //             let owned = self.build_messages(user_text).await;
+    //             let messages = Self::as_ref_messages(&owned);
+    //             match self
+    //                 .ollama
+    //                 .chat_with_messages(&OllamaModel::REASONING, &messages, 0.7, 512)
+    //                 .await
+    //             {
+    //                 Ok(response) if !response.trim().is_empty() => response,
+    //                 _ => self.template_conversation(user_text),
+    //             }
+    //         }
+    //         Intent::EntityLookup => self.handle_entity_lookup(user_text),
+    //         Intent::WebFetch => self.handle_web_fetch(user_text).await,
+    //         Intent::FileSearch => self.handle_file_search(user_text).await,
+    //         Intent::ExecuteAction => self.handle_execute_action(user_text),
+    //         Intent::SystemCommand => self.handle_system_command(user_text),
+    //         Intent::SwitchMode => self.handle_switch_mode(user_text),
+    //         Intent::Unknown => self.handle_unknown(user_text),
+    //     }
+    // }
 
     /// Stream a conversational response, invoking `on_token` for each text
     /// chunk as it arrives. Returns the full response.
     ///
     /// This is the perceived-latency win: the caller feeds tokens to TTS as
     /// they stream in instead of waiting for the whole response.
-    pub async fn stream_conversation(
-        &mut self,
-        user_text: &str,
-        mut on_token: impl FnMut(&str),
-    ) -> String {
-        let owned = self.build_messages(user_text).await;
-        let messages = Self::as_ref_messages(&owned);
-        match self
-            .ollama
-            .chat_stream(&OllamaModel::REASONING, &messages, 0.7, 512, &mut on_token)
-            .await
-        {
-            Ok(response) if !response.trim().is_empty() => response,
-            _ => {
-                let fallback = self.template_conversation(user_text);
-                on_token(&fallback);
-                fallback
-            }
-        }
-    }
+    ///
+    /// NOTE: Disabled (commented out) — superseded by
+    /// `process_turn_with_callback`, which threads tokens through the full
+    /// classify-then-dispatch pipeline. Kept for reference.
+    // pub async fn stream_conversation(
+    //     &mut self,
+    //     user_text: &str,
+    //     mut on_token: impl FnMut(&str),
+    // ) -> String {
+    //     let owned = self.build_messages(user_text).await;
+    //     let messages = Self::as_ref_messages(&owned);
+    //     match self
+    //         .ollama
+    //         .chat_stream(&OllamaModel::REASONING, &messages, 0.7, 512, &mut on_token)
+    //         .await
+    //     {
+    //         Ok(response) if !response.trim().is_empty() => response,
+    //         _ => {
+    //             let fallback = self.template_conversation(user_text);
+    //             on_token(&fallback);
+    //             fallback
+    //         }
+    //     }
+    // }
 
     fn handle_entity_lookup(&mut self, user_text: &str) -> String {
         let resolver = ContextResolver::new(&self.transcript_buffer);
