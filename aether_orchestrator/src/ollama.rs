@@ -3,8 +3,8 @@
 //! Wraps the Ollama HTTP API to run models on specific GPUs.
 //! Routes requests to the correct GPU based on model tier:
 //!
-//! - **Tier 1** (GTX 1080, GPU 0): Llama 3.1 8B — main reasoning/conversation
-//! - **Tier 2** (GTX 1650S, GPU 1): Nemotron-3 Nano 4B — router/tool-caller
+//! - **Tier 1** (GTX 1080, GPU 0): Llama 3.1 8B — main reasoning/conversation AND intent router
+//! - **Tier 2** (GTX 1650S, GPU 1): Nemotron-3 Nano 4B — best-effort fallback classifier
 //! - **Tier 3** (CPU): nomic-embed-text — embeddings
 
 use anyhow::{Context, Result};

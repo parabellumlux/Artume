@@ -13,3 +13,6 @@ credentials.md
 *.env
 repositories.md
 models/
+piper/
+*.onnx
+*.onnx.json

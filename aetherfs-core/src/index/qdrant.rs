@@ -144,4 +144,47 @@ impl QdrantIndex {
 
         Ok(results)
     }
+
+    /// Delete the vector point(s) for a given path.
+    ///
+    /// The file-level point uses a deterministic UUID derived from the path
+    /// (same scheme as `upsert_vector`), and each content chunk uses
+    /// `{path}#chunk{index}`. We delete by payload filter on `path` so both
+    /// the file point and all its chunk points are removed in one call.
+    pub async fn delete_vector(
+        &self,
+        path: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let client = match &self.client {
+            Some(c) => c,
+            None => return Err("Qdrant client not initialized".into()),
+        };
+
+        use qdrant_client::qdrant::{Condition, DeletePointsBuilder, Filter, PointsIdsList};
+
+        // Delete by payload path match (covers file point + all chunk points).
+        let filter = Filter::must([Condition::matches("path", path.to_string())]);
+        client
+            .delete_points(
+                DeletePointsBuilder::new(&self.collection_name)
+                    .points(filter)
+                    .wait(true),
+            )
+            .await?;
+
+        // Also delete the deterministic file-level UUID point directly, in
+        // case the payload filter misses it (e.g. payload not indexed).
+        let point_uuid = Uuid::new_v5(&Uuid::NAMESPACE_URL, path.as_bytes()).to_string();
+        client
+            .delete_points(
+                DeletePointsBuilder::new(&self.collection_name)
+                    .points(PointsIdsList {
+                        ids: vec![PointId::from(point_uuid)],
+                    })
+                    .wait(true),
+            )
+            .await?;
+
+        Ok(())
+    }
 }

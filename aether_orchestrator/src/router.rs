@@ -1,7 +1,7 @@
 //! AetherOS Intent Router
 //!
-//! Classifies user utterances into intents using the Nemotron-3 Nano
-//! model on the GTX 1650S via Ollama. This replaces the menu hierarchy
+//! Classifies user utterances into intents using the Llama 3.1 8B
+//! model on the GTX 1080 via Ollama. This replaces the menu hierarchy
 //! with a single natural-language entry point.
 
 use crate::ollama::OllamaClient;

@@ -4,7 +4,7 @@
 //! through the dual-GPU AI stack:
 //!
 //! ```text
-//! User Input → [Ollama API] → Intent Classification (Nemotron-3 Nano on 1650S)
+//! User Input → [Ollama API] → Intent Classification (Llama 3.1 8B on 1080)
 //!   ├── Conversation → [Llama 3.1 8B on GTX 1080] → response (with history)
 //!   ├── EntityLookup → [aether_buffer NER + ring buffer] → entity value
 //!   ├── WebFetch     → [aether_browser HTTP + Readability] → [Llama 3.1 summary] → response

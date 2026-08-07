@@ -180,9 +180,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     }
                 }
                 WatcherEvent::Remove(path) => {
-                    // Handle file deletion from index/databases if necessary
+                    // Handle file deletion from index/databases.
                     println!("AetherFS Watcher: Detected file deletion: {}", path.display());
-                    // In a production setup, we would execute SQL delete and Qdrant point delete here.
+                    if let Err(e) = index_mgr_proc.delete_file(&path.to_string_lossy()).await {
+                        eprintln!("AetherFS Indexer: Failed to remove {} from index: {}", path.display(), e);
+                    } else {
+                        println!("AetherFS Indexer: Removed {} from index", path.display());
+                    }
                 }
             }
         }

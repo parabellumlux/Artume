@@ -455,6 +455,18 @@ impl SqliteIndex {
         }
     }
 
+    /// Remove a file record and all its content chunks from the index.
+    ///
+    /// The FTS5 triggers (`files_ad`, `chunks_ad`) keep the lexical search
+    /// tables in sync automatically. Returns the number of file rows deleted.
+    pub fn delete_file(&self, path: &str) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        // Delete chunks first (they reference the path), then the file row.
+        conn.execute("DELETE FROM file_chunks WHERE source_path = ?1;", params![path])?;
+        let deleted = conn.execute("DELETE FROM files WHERE path = ?1;", params![path])?;
+        Ok(deleted)
+    }
+
     fn row_to_record(&self, row: &rusqlite::Row) -> Result<DbFileRecord> {
         let is_dup_int: i32 = row.get(7)?;
         Ok(DbFileRecord {

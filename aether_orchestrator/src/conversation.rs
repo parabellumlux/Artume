@@ -110,8 +110,8 @@ pub struct ConversationLoop {
     router: IntentRouter,
     /// Ollama client for GPU-backed inference.
     ollama: OllamaClient,
-    /// Browser engine for web fetching.
-    browser: BrowserEngine,
+    /// Browser engine for web fetching (None if it failed to initialise).
+    browser: Option<BrowserEngine>,
     /// Transcript ring buffer for entity lookup.
     transcript_buffer: TranscriptRingBuffer,
     /// File search client for aetherfs-core daemon.
@@ -151,10 +151,13 @@ impl ConversationLoop {
     pub fn new(config: ConversationConfig) -> Self {
         let router = IntentRouter::new(config.router.clone());
         let ollama = OllamaClient::new(None);
-        let browser = BrowserEngine::new().unwrap_or_else(|e| {
-            warn!("Failed to create browser engine: {e} — web fetch will be unavailable");
-            BrowserEngine::new().expect("BrowserEngine creation failed")
-        });
+        let browser = match BrowserEngine::new() {
+            Ok(b) => Some(b),
+            Err(e) => {
+                warn!("Failed to create browser engine: {e} — web fetch will be unavailable");
+                None
+            }
+        };
         let file_search = FileSearchClient::new(Some(config.file_search_socket.clone()));
 
         // Load the soul identity from soul.md.
@@ -574,7 +577,11 @@ impl ConversationLoop {
         if is_search && self.extract_url(user_text).is_none() {
             let query = self.extract_search_query(user_text);
             info!("WebFetch: searching for '{query}'");
-            match self.browser.search(&query, 5).await {
+            let Some(browser) = self.browser.as_ref() else {
+                warn!("WebFetch: browser engine unavailable");
+                return "Web search is unavailable right now.".to_string();
+            };
+            match browser.search(&query, 5).await {
                 Ok(results) if !results.is_empty() => {
                     let mut out = format!("Here are the top results for \"{query}\": ");
                     for (i, r) in results.iter().enumerate() {
@@ -601,7 +608,11 @@ impl ConversationLoop {
         match url {
             Some(u) => {
                 info!("WebFetch: fetching {u}");
-                match self.browser.fetch(&u).await {
+                let Some(browser) = self.browser.as_ref() else {
+                    warn!("WebFetch: browser engine unavailable");
+                    return "Web browsing is unavailable right now.".to_string();
+                };
+                match browser.fetch(&u).await {
                     Ok(result) => {
                         let content = ReadabilityExtractor::extract(&result.html);
                         let formatted = ConversationalFormatter::format(&content);

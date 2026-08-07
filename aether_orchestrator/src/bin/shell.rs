@@ -72,7 +72,7 @@ async fn main() -> anyhow::Result<()> {
     println!("╚══════════════════════════════════════════════╝");
     println!();
     println!("GPU Pipeline:");
-    println!("  Router:       Nemotron-3 Nano on GTX 1650S (GPU 1)");
+    println!("  Router:       Llama 3.1 8B on GTX 1080 (GPU 0)");
     println!("  Conversation: Llama 3.1 8B on GTX 1080 (GPU 0)");
     println!("  Embeddings:   nomic-embed-text on CPU");
     println!();

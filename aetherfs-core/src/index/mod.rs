@@ -155,6 +155,23 @@ impl IndexManager {
         Ok(())
     }
 
+    /// Remove a file from the index: SQLite record + chunks, and Qdrant vectors.
+    pub async fn delete_file(&self, path: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // Remove from SQLite (FTS5 triggers keep lexical tables in sync).
+        let deleted = self.sqlite.delete_file(path)?;
+        if deleted == 0 {
+            // Not in the index — nothing to do.
+            return Ok(());
+        }
+
+        // Remove vectors from Qdrant (best-effort; Qdrant may be offline).
+        if let Err(e) = self.qdrant.delete_vector(path).await {
+            eprintln!("AetherFS Indexer: failed to delete Qdrant vectors for {}: {}", path, e);
+        }
+
+        Ok(())
+    }
+
     /// Hybrid search: Combines SQLite FTS5 lexical results and Qdrant semantic vector results.
     pub async fn search_hybrid(&self, query_text: &str, limit: usize) -> Vec<SearchResult> {
         let mut combined_results = std::collections::HashMap::new();
