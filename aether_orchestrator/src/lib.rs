@@ -24,8 +24,10 @@ pub mod profile;
 pub mod skills;
 #[cfg(feature = "tts")]
 pub mod tts_service;
+#[cfg(feature = "tts")]
+pub use tts_service::{TtsService, StreamingTts};
 
-pub use ollama::{OllamaClient, OllamaModel};
+pub use ollama::{OllamaClient, OllamaModel, ToolDef, ToolFunction, ToolCallResult};
 pub use router::{Intent, IntentRouter, RouterConfig};
 #[cfg(feature = "stt")]
 pub use stt::{SttEngine, SttConfig};

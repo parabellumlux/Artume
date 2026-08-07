@@ -6,7 +6,7 @@
 //! - Captures mic audio on wake word → STT → process → TTS playback
 //! - Plays TTS responses through the default audio output device
 
-use aether_orchestrator::{ConversationConfig, ConversationLoop};
+use aether_orchestrator::{ConversationConfig, ConversationLoop, StreamingTts};
 use aether_audio::output::AudioOutput;
 use aether_audio::capture::capture_until_silence;
 use cpal::traits::{DeviceTrait, HostTrait};
@@ -259,19 +259,32 @@ async fn main() -> anyhow::Result<()> {
                 break;
             }
 
-            match loop_.process_turn(&line).await {
+            // Build a streaming TTS sink if audio output is available.
+            let mut streaming_tts = tts.as_ref().map(|t| StreamingTts::new(t.clone()));
+
+            let result = if let Some(ref mut sink) = streaming_tts {
+                loop_
+                    .process_turn_with_callback(&line, Some(&mut |tok: &str| {
+                        sink.feed(tok);
+                    }))
+                    .await
+            } else {
+                loop_.process_turn(&line).await
+            };
+
+            match result {
                 Ok(turn) => {
                     let response = turn.response;
                     println!(
-                        "Aether > [{}] {}",
+                        "Aether > [{}] {}\n       ({:.0} ms)",
                         turn.intent.label(),
-                        response
+                        response,
+                        turn.turn_ms as f64
                     );
-                    println!("       ({:.0} ms)", turn.turn_ms as f64);
 
-                    // Play TTS response through audio output (non-blocking).
-                    if let Some(ref tts) = tts {
-                        tts.speak(&response);
+                    // Flush any remaining buffered text to TTS.
+                    if let Some(ref mut sink) = streaming_tts {
+                        sink.flush();
                     }
                 }
                 Err(e) => {

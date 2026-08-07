@@ -8,7 +8,7 @@
 //! a conversation rather than a menu system.
 
 use crate::file_search::FileSearchClient;
-use crate::ollama::{OllamaClient, OllamaModel};
+use crate::ollama::{OllamaClient, OllamaModel, ToolCallResult, ToolDef, ToolFunction};
 use crate::profile::UserProfile;
 use crate::router::{Intent, IntentRouter, RouterConfig};
 #[cfg(feature = "stt")]
@@ -382,6 +382,16 @@ impl ConversationLoop {
     /// 4. Optionally synthesize speech through spatial audio
     /// 5. Evaluate cognitive load for notification management
     pub async fn process_turn(&mut self, user_text: &str) -> anyhow::Result<Turn> {
+        self.process_turn_with_callback(user_text, None).await
+    }
+
+    /// Process a turn, optionally streaming text tokens to `on_token` as they
+    /// arrive (for TTS). Returns the full turn.
+    pub async fn process_turn_with_callback(
+        &mut self,
+        user_text: &str,
+        mut on_token: Option<&mut dyn FnMut(&str)>,
+    ) -> anyhow::Result<Turn> {
         let start = Instant::now();
         let timestamp = chrono::Utc::now();
 
@@ -393,7 +403,7 @@ impl ConversationLoop {
 
         // Step 2: Dispatch based on intent.
         let response = match intent {
-            Intent::Conversation => self.handle_conversation(user_text).await,
+            Intent::Conversation => self.handle_conversation(user_text, on_token).await,
             Intent::EntityLookup => self.handle_entity_lookup(user_text),
             Intent::WebFetch => self.handle_web_fetch(user_text).await,
             Intent::FileSearch => self.handle_file_search(user_text).await,
@@ -475,15 +485,18 @@ impl ConversationLoop {
 
     // --- Intent handlers ---
 
-    async fn handle_conversation(&mut self, user_text: &str) -> String {
-        // Build message history for context.
-        let mut messages: Vec<(&str, &str)> = Vec::new();
-        let mut owned_contexts: Vec<String> = Vec::new();
+    /// Build the message list for the reasoning model: system prompt, RAG
+    /// context, sliding history window, and the current user input.
+    ///
+    /// Returns owned `(role, content)` pairs so the caller can borrow them
+    /// freely without lifetime conflicts.
+    async fn build_messages(&mut self, user_text: &str) -> Vec<(String, String)> {
+        let mut messages: Vec<(String, String)> = Vec::new();
 
         // System prompt.
-        messages.push(("system", &self.config.system_prompt));
+        messages.push(("system".to_string(), self.config.system_prompt.clone()));
 
-        // RAG: query aetherfs for relevant file context based on user input
+        // RAG: query aetherfs for relevant file context based on user input.
         if self.file_search.health().await {
             match self.file_search.search(user_text, 3).await {
                 Ok(results) if !results.is_empty() => {
@@ -499,8 +512,7 @@ impl ConversationLoop {
                         ));
                     }
                     rag_context.push_str("\nUse this context if relevant to the user's question.\n");
-                    owned_contexts.push(rag_context);
-                    messages.push(("system", owned_contexts.last().unwrap()));
+                    messages.push(("system".to_string(), rag_context));
                 }
                 _ => {}
             }
@@ -512,23 +524,241 @@ impl ConversationLoop {
             .len()
             .saturating_sub(self.config.max_history_turns);
         for turn in &self.history[start_idx..] {
-            messages.push(("user", &turn.user_text));
-            messages.push(("assistant", &turn.response));
+            messages.push(("user".to_string(), turn.user_text.clone()));
+            messages.push(("assistant".to_string(), turn.response.clone()));
         }
 
         // Current user input.
-        messages.push(("user", user_text));
+        messages.push(("user".to_string(), user_text.to_string()));
 
-        // Try Ollama on GTX 1080 first (Tier 1).
+        messages
+    }
+
+    /// Borrow the owned messages as `&[(&str, &str)]` for the Ollama client.
+    fn as_ref_messages(messages: &[(String, String)]) -> Vec<(&str, &str)> {
+        messages
+            .iter()
+            .map(|(role, content)| (role.as_str(), content.as_str()))
+            .collect()
+    }
+
+    /// Single-pass conversational handler.
+    ///
+    /// One call to the 8B with tool definitions. The model either:
+    ///   (a) emits a tool call (act) — we execute it and return a short
+    ///       confirmation, or
+    ///   (b) emits a plain conversational response (converse).
+    ///
+    /// If the tool call is malformed or the model errors, we fall back to the
+    /// deterministic label router, then to a template. This never returns
+    /// empty speech.
+    ///
+    /// When `on_token` is provided, text tokens are streamed to it as they
+    /// arrive (for TTS), so speech can start before the response completes.
+    async fn handle_conversation(
+        &mut self,
+        user_text: &str,
+        mut on_token: Option<&mut dyn FnMut(&str)>,
+    ) -> String {
+        let owned = self.build_messages(user_text).await;
+        let messages = Self::as_ref_messages(&owned);
+
+        // Single-pass tool-calling on the 8B (streaming when a callback is given).
+        let result = if let Some(cb) = on_token.as_deref_mut() {
+            self.ollama
+                .chat_with_tools_stream(
+                    &OllamaModel::REASONING,
+                    &messages,
+                    &self.tool_definitions(),
+                    0.7,
+                    512,
+                    cb,
+                )
+                .await
+        } else {
+            self.ollama
+                .chat_with_tools(
+                    &OllamaModel::REASONING,
+                    &messages,
+                    &self.tool_definitions(),
+                    0.7,
+                    512,
+                )
+                .await
+        };
+
+        match result {
+            Ok(ToolCallResult::Response(text)) if !text.trim().is_empty() => text,
+            Ok(ToolCallResult::ToolCall { name, arguments }) => {
+                // Guard against malformed tool calls (e.g. the model emitting
+                // `{"name": "<nil>"}` or an unknown tool). Fall back to the
+                // label router rather than returning a generic message.
+                if self.is_known_tool(&name) {
+                    info!("ToolCall: {name} {arguments}");
+                    self.execute_tool_call(&name, &arguments).await
+                } else {
+                    warn!("ToolCall: malformed/unknown tool '{name}' — falling back to label router");
+                    self.fallback_router(user_text).await
+                }
+            }
+            Ok(ToolCallResult::Response(_)) => {
+                // Empty response — fall back to the label router.
+                self.fallback_router(user_text).await
+            }
+            Err(e) => {
+                warn!("Ollama[1080] single-pass failed: {e} — falling back to label router");
+                self.fallback_router(user_text).await
+            }
+        }
+    }
+
+    /// Whether a tool name is one we actually implement.
+    fn is_known_tool(&self, name: &str) -> bool {
+        matches!(
+            name,
+            "set_volume" | "switch_mode" | "search_files" | "get_time"
+        )
+    }
+
+    /// Fallback path: classify via the label router, then dispatch. Used when
+    /// single-pass tool-calling fails or returns empty.
+    async fn fallback_router(&mut self, user_text: &str) -> String {
+        let intent = self.router.classify(user_text).await;
+        match intent {
+            Intent::Conversation => {
+                // Try a plain (non-tool) chat call; template on failure.
+                let owned = self.build_messages(user_text).await;
+                let messages = Self::as_ref_messages(&owned);
+                match self
+                    .ollama
+                    .chat_with_messages(&OllamaModel::REASONING, &messages, 0.7, 512)
+                    .await
+                {
+                    Ok(response) if !response.trim().is_empty() => response,
+                    _ => self.template_conversation(user_text),
+                }
+            }
+            Intent::EntityLookup => self.handle_entity_lookup(user_text),
+            Intent::WebFetch => self.handle_web_fetch(user_text).await,
+            Intent::FileSearch => self.handle_file_search(user_text).await,
+            Intent::ExecuteAction => self.handle_execute_action(user_text),
+            Intent::SystemCommand => self.handle_system_command(user_text),
+            Intent::SwitchMode => self.handle_switch_mode(user_text),
+            Intent::Unknown => self.handle_unknown(user_text),
+        }
+    }
+
+    /// The tool definitions exposed to the 8B for single-pass act-or-converse.
+    fn tool_definitions(&self) -> Vec<ToolDef> {
+        use serde_json::json;
+        vec![
+            ToolDef {
+                r#type: "function",
+                function: ToolFunction {
+                    name: "set_volume",
+                    description: "Set the system volume to a level between 0 and 100.",
+                    parameters: json!({
+                        "type": "object",
+                        "properties": {
+                            "level": {"type": "integer", "minimum": 0, "maximum": 100}
+                        },
+                        "required": ["level"]
+                    }),
+                },
+            },
+            ToolDef {
+                r#type: "function",
+                function: ToolFunction {
+                    name: "switch_mode",
+                    description: "Switch the active mode to browser, email, ide, files, docs, settings, ebook, or desktop.",
+                    parameters: json!({
+                        "type": "object",
+                        "properties": {
+                            "mode": {"type": "string", "enum": ["browser", "email", "ide", "files", "docs", "settings", "ebook", "desktop"]}
+                        },
+                        "required": ["mode"]
+                    }),
+                },
+            },
+            ToolDef {
+                r#type: "function",
+                function: ToolFunction {
+                    name: "search_files",
+                    description: "Search the local file index for files matching a query.",
+                    parameters: json!({
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string"}
+                        },
+                        "required": ["query"]
+                    }),
+                },
+            },
+            ToolDef {
+                r#type: "function",
+                function: ToolFunction {
+                    name: "get_time",
+                    description: "Get the current local time.",
+                    parameters: json!({"type": "object", "properties": {}}),
+                },
+            },
+        ]
+    }
+
+    /// Execute a tool call emitted by the model and return a spoken response.
+    async fn execute_tool_call(&mut self, name: &str, arguments: &serde_json::Value) -> String {
+        match name {
+            "set_volume" => {
+                let level = arguments.get("level").and_then(|v| v.as_i64()).unwrap_or(0);
+                format!("Setting volume to {} percent.", level)
+            }
+            "switch_mode" => {
+                let mode = arguments
+                    .get("mode")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("desktop");
+                format!("Switching to {} mode.", mode)
+            }
+            "search_files" => {
+                let query = arguments
+                    .get("query")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                self.handle_file_search(query).await
+            }
+            "get_time" => {
+                let now = chrono::Local::now();
+                format!("The current time is {}.", now.format("%I:%M %p"))
+            }
+            other => {
+                warn!("Unknown tool call: {other}");
+                "I'm not sure how to do that yet.".to_string()
+            }
+        }
+    }
+
+    /// Stream a conversational response, invoking `on_token` for each text
+    /// chunk as it arrives. Returns the full response.
+    ///
+    /// This is the perceived-latency win: the caller feeds tokens to TTS as
+    /// they stream in instead of waiting for the whole response.
+    pub async fn stream_conversation(
+        &mut self,
+        user_text: &str,
+        mut on_token: impl FnMut(&str),
+    ) -> String {
+        let owned = self.build_messages(user_text).await;
+        let messages = Self::as_ref_messages(&owned);
         match self
             .ollama
-            .chat_with_messages(&OllamaModel::REASONING, &messages, 0.7, 512)
+            .chat_stream(&OllamaModel::REASONING, &messages, 0.7, 512, &mut on_token)
             .await
         {
-            Ok(response) => response,
-            Err(e) => {
-                warn!("Ollama[1080] failed: {e} — using template fallback");
-                self.template_conversation(user_text)
+            Ok(response) if !response.trim().is_empty() => response,
+            _ => {
+                let fallback = self.template_conversation(user_text);
+                on_token(&fallback);
+                fallback
             }
         }
     }

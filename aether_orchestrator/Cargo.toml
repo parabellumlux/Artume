@@ -15,7 +15,7 @@ tts = []
 
 [dependencies]
 # Ollama HTTP API client
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 
 # Speech-to-text via whisper.cpp (feature-gated)
 whisper-rs = { version = "0.16", optional = true }
@@ -46,6 +46,7 @@ chrono = "0.4"
 uuid = { version = "1", features = ["v4"] }
 dirs = "5"
 toml = "0.8"
+futures-util = "0.3"
 
 # gRPC client for aetherfs-core
 tonic = "0.11"

@@ -64,6 +64,37 @@ struct EmbedResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Tool-calling types
+// ---------------------------------------------------------------------------
+
+/// A function tool definition sent to Ollama for single-pass tool-calling.
+#[derive(Debug, Clone, Serialize)]
+pub struct ToolDef {
+    pub r#type: &'static str,
+    pub function: ToolFunction,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ToolFunction {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub parameters: serde_json::Value,
+}
+
+/// The result of a single-pass tool-calling chat: either a conversational
+/// response or a tool call to execute.
+#[derive(Debug, Clone)]
+pub enum ToolCallResult {
+    /// The model produced a plain conversational response.
+    Response(String),
+    /// The model requested a tool call.
+    ToolCall {
+        name: String,
+        arguments: serde_json::Value,
+    },
+}
+
+// ---------------------------------------------------------------------------
 // Model configuration
 // ---------------------------------------------------------------------------
 
@@ -332,6 +363,332 @@ impl OllamaClient {
         );
 
         Ok(embed_resp.embedding)
+    }
+
+    /// Stream a chat completion, invoking `on_token` for each text chunk as it
+    /// arrives. Returns the full concatenated response.
+    ///
+    /// This is the key to perceived-latency reduction: the caller can feed
+    /// tokens to TTS as they stream in instead of waiting for the whole
+    /// response to finish generating.
+    pub async fn chat_stream(
+        &self,
+        model: &OllamaModel,
+        messages: &[(&str, &str)],
+        temperature: f32,
+        max_tokens: i32,
+        mut on_token: impl FnMut(&str),
+    ) -> Result<String> {
+        let start = Instant::now();
+
+        let msgs: Vec<Message> = messages
+            .iter()
+            .map(|(role, content)| Message {
+                role: role.to_string(),
+                content: content.to_string(),
+            })
+            .collect();
+
+        #[derive(Serialize)]
+        struct StreamRequest<'a> {
+            model: &'a str,
+            messages: Vec<Message>,
+            stream: bool,
+            options: Options,
+        }
+
+        let request = StreamRequest {
+            model: model.name,
+            messages: msgs,
+            stream: true,
+            options: Options {
+                num_predict: Some(max_tokens),
+                temperature: Some(temperature),
+                top_p: Some(0.9),
+            },
+        };
+
+        let resp = self
+            .client
+            .post(format!("{}/api/chat", self.base_url))
+            .json(&request)
+            .send()
+            .await
+            .with_context(|| format!("Ollama stream request failed for {}", model.name))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Ollama returned HTTP {}: {}", status, body);
+        }
+
+        // Ollama streams newline-delimited JSON objects.
+        let mut stream = resp.bytes_stream();
+        let mut full = String::new();
+        let mut buf = Vec::new();
+
+        use futures_util::StreamExt;
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.with_context(|| "Ollama stream read error")?;
+            buf.extend_from_slice(&chunk);
+
+            // Split on newlines and parse complete JSON objects.
+            while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+                let line: Vec<u8> = buf.drain(..=pos).collect();
+                let line = String::from_utf8_lossy(&line);
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                #[derive(Deserialize)]
+                struct StreamChunk {
+                    #[serde(default)]
+                    message: Option<MessageContent>,
+                    #[serde(default)]
+                    done: bool,
+                }
+                if let Ok(parsed) = serde_json::from_str::<StreamChunk>(line) {
+                    if let Some(msg) = parsed.message {
+                        if !msg.content.is_empty() {
+                            on_token(&msg.content);
+                            full.push_str(&msg.content);
+                        }
+                    }
+                    if parsed.done {
+                        break;
+                    }
+                }
+            }
+        }
+
+        let elapsed = start.elapsed();
+        info!(
+            "Ollama[{}] on GPU {}: streamed {} chars in {:.0}ms",
+            model.label,
+            model.gpu,
+            full.len(),
+            elapsed.as_millis()
+        );
+
+        Ok(full)
+    }
+
+    /// Single-pass tool-calling chat. The model either returns a conversational
+    /// response (content) or a tool call (name + JSON arguments).
+    ///
+    /// This collapses the two-step classify-then-converse into one call: the
+    /// model decides whether to act (emit a tool call) or converse (emit text).
+    pub async fn chat_with_tools(
+        &self,
+        model: &OllamaModel,
+        messages: &[(&str, &str)],
+        tools: &[ToolDef],
+        temperature: f32,
+        max_tokens: i32,
+    ) -> Result<ToolCallResult> {
+        let msgs: Vec<Message> = messages
+            .iter()
+            .map(|(role, content)| Message {
+                role: role.to_string(),
+                content: content.to_string(),
+            })
+            .collect();
+
+        #[derive(Serialize)]
+        struct ToolsRequest<'a> {
+            model: &'a str,
+            messages: Vec<Message>,
+            stream: bool,
+            tools: &'a [ToolDef],
+            options: Options,
+        }
+
+        let request = ToolsRequest {
+            model: model.name,
+            messages: msgs,
+            stream: false,
+            tools,
+            options: Options {
+                num_predict: Some(max_tokens),
+                temperature: Some(temperature),
+                top_p: Some(0.9),
+            },
+        };
+
+        let resp = self
+            .client
+            .post(format!("{}/api/chat", self.base_url))
+            .json(&request)
+            .send()
+            .await
+            .with_context(|| format!("Ollama tools request failed for {}", model.name))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Ollama returned HTTP {}: {}", status, body);
+        }
+
+        #[derive(Deserialize)]
+        struct ToolsResponse {
+            message: ToolsMessage,
+        }
+        #[derive(Deserialize)]
+        struct ToolsMessage {
+            #[serde(default)]
+            content: String,
+            #[serde(default)]
+            tool_calls: Vec<ToolCallWire>,
+        }
+        #[derive(Deserialize)]
+        struct ToolCallWire {
+            function: ToolFunctionWire,
+        }
+        #[derive(Deserialize)]
+        struct ToolFunctionWire {
+            name: String,
+            #[serde(default)]
+            arguments: serde_json::Value,
+        }
+
+        let parsed: ToolsResponse = resp
+            .json()
+            .await
+            .with_context(|| "Failed to parse Ollama tools response")?;
+
+        if let Some(tc) = parsed.message.tool_calls.first() {
+            Ok(ToolCallResult::ToolCall {
+                name: tc.function.name.clone(),
+                arguments: tc.function.arguments.clone(),
+            })
+        } else {
+            Ok(ToolCallResult::Response(parsed.message.content))
+        }
+    }
+
+    /// Streaming single-pass tool-calling chat.
+    ///
+    /// Streams text tokens to `on_token` as they arrive (for TTS), and
+    /// returns either a conversational response or a tool call. This gives
+    /// both the perceived-latency win (speech starts early) and the
+    /// intelligence win (act-or-converse in one call).
+    pub async fn chat_with_tools_stream(
+        &self,
+        model: &OllamaModel,
+        messages: &[(&str, &str)],
+        tools: &[ToolDef],
+        temperature: f32,
+        max_tokens: i32,
+        mut on_token: impl FnMut(&str),
+    ) -> Result<ToolCallResult> {
+        let msgs: Vec<Message> = messages
+            .iter()
+            .map(|(role, content)| Message {
+                role: role.to_string(),
+                content: content.to_string(),
+            })
+            .collect();
+
+        #[derive(Serialize)]
+        struct ToolsStreamRequest<'a> {
+            model: &'a str,
+            messages: Vec<Message>,
+            stream: bool,
+            tools: &'a [ToolDef],
+            options: Options,
+        }
+
+        let request = ToolsStreamRequest {
+            model: model.name,
+            messages: msgs,
+            stream: true,
+            tools,
+            options: Options {
+                num_predict: Some(max_tokens),
+                temperature: Some(temperature),
+                top_p: Some(0.9),
+            },
+        };
+
+        let resp = self
+            .client
+            .post(format!("{}/api/chat", self.base_url))
+            .json(&request)
+            .send()
+            .await
+            .with_context(|| format!("Ollama tools stream request failed for {}", model.name))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Ollama returned HTTP {}: {}", status, body);
+        }
+
+        let mut stream = resp.bytes_stream();
+        let mut buf = Vec::new();
+        let mut full = String::new();
+        let mut tool_call: Option<(String, serde_json::Value)> = None;
+
+        use futures_util::StreamExt;
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.with_context(|| "Ollama tools stream read error")?;
+            buf.extend_from_slice(&chunk);
+
+            while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+                let line: Vec<u8> = buf.drain(..=pos).collect();
+                let line = String::from_utf8_lossy(&line);
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+
+                #[derive(Deserialize)]
+                struct StreamChunk {
+                    #[serde(default)]
+                    message: Option<StreamMessage>,
+                    #[serde(default)]
+                    done: bool,
+                }
+                #[derive(Deserialize)]
+                struct StreamMessage {
+                    #[serde(default)]
+                    content: String,
+                    #[serde(default)]
+                    tool_calls: Vec<ToolCallWire>,
+                }
+                #[derive(Deserialize)]
+                struct ToolCallWire {
+                    function: ToolFunctionWire,
+                }
+                #[derive(Deserialize)]
+                struct ToolFunctionWire {
+                    name: String,
+                    #[serde(default)]
+                    arguments: serde_json::Value,
+                }
+
+                if let Ok(parsed) = serde_json::from_str::<StreamChunk>(line) {
+                    if let Some(msg) = parsed.message {
+                        if !msg.content.is_empty() {
+                            on_token(&msg.content);
+                            full.push_str(&msg.content);
+                        }
+                        if let Some(tc) = msg.tool_calls.first() {
+                            tool_call = Some((tc.function.name.clone(), tc.function.arguments.clone()));
+                        }
+                    }
+                    if parsed.done {
+                        break;
+                    }
+                }
+            }
+        }
+
+        if let Some((name, arguments)) = tool_call {
+            Ok(ToolCallResult::ToolCall { name, arguments })
+        } else {
+            Ok(ToolCallResult::Response(full))
+        }
     }
 
     /// Quick classification using the router model.

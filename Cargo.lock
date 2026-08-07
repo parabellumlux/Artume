@@ -116,6 +116,7 @@ dependencies = [
  "cpal 0.15.3",
  "dirs",
  "env_logger",
+ "futures-util",
  "hound",
  "log",
  "parking_lot",

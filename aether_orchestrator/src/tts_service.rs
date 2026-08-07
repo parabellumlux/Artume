@@ -11,6 +11,7 @@ use std::sync::mpsc;
 use std::thread;
 
 /// A TTS service that runs synthesis in a background thread.
+#[derive(Clone)]
 pub struct TtsService {
     /// Send text to synthesize.
     tx: mpsc::Sender<String>,
@@ -57,5 +58,51 @@ impl TtsService {
     /// Send text to be synthesized and played. Non-blocking.
     pub fn speak(&self, text: &str) {
         let _ = self.tx.send(text.to_string());
+    }
+}
+
+/// A streaming TTS sink that buffers incoming text and synthesizes on
+/// sentence boundaries, so speech starts before the full response is done.
+///
+/// Feed it token chunks as they stream from the LLM; it flushes a sentence
+/// to the underlying `TtsService` as soon as a sentence terminator is seen.
+pub struct StreamingTts {
+    /// Underlying TTS service.
+    tts: TtsService,
+    /// Buffer of text not yet flushed to a sentence.
+    buffer: String,
+}
+
+impl StreamingTts {
+    /// Create a streaming sink over an existing TTS service.
+    pub fn new(tts: TtsService) -> Self {
+        Self {
+            tts,
+            buffer: String::new(),
+        }
+    }
+
+    /// Feed a token chunk. Flushes complete sentences to TTS.
+    pub fn feed(&mut self, chunk: &str) {
+        self.buffer.push_str(chunk);
+        // Flush on sentence boundaries (period, question mark, exclamation,
+        // newline). Keep a trailing partial sentence buffered.
+        while let Some(pos) = self.buffer.find(['.', '!', '?', '\n']) {
+            let end = pos + 1;
+            let sentence = self.buffer[..end].trim().to_string();
+            self.buffer.drain(..end);
+            if !sentence.is_empty() {
+                self.tts.speak(&sentence);
+            }
+        }
+    }
+
+    /// Flush any remaining buffered text to TTS. Call at end of stream.
+    pub fn flush(&mut self) {
+        let remaining = self.buffer.trim().to_string();
+        self.buffer.clear();
+        if !remaining.is_empty() {
+            self.tts.speak(&remaining);
+        }
     }
 }
