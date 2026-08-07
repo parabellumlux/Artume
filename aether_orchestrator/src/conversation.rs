@@ -562,6 +562,40 @@ impl ConversationLoop {
     }
 
     async fn handle_web_fetch(&mut self, user_text: &str) -> String {
+        // If the user asked to search (no URL), do a web search instead.
+        let lower = user_text.to_lowercase();
+        let is_search = lower.contains("search")
+            || lower.contains("look up")
+            || lower.contains("find")
+            || lower.contains("news about")
+            || lower.contains("what's new")
+            || lower.contains("what is new");
+
+        if is_search && self.extract_url(user_text).is_none() {
+            let query = self.extract_search_query(user_text);
+            info!("WebFetch: searching for '{query}'");
+            match self.browser.search(&query, 5).await {
+                Ok(results) if !results.is_empty() => {
+                    let mut out = format!("Here are the top results for \"{query}\": ");
+                    for (i, r) in results.iter().enumerate() {
+                        out.push_str(&format!("{}. {}. ", i + 1, r.title));
+                    }
+                    out.push_str("Say 'open result 1' or give me a URL to read one.");
+                    out
+                }
+                Ok(_) => format!("I couldn't find any results for \"{query}\"."),
+                Err(e) => {
+                    warn!("WebFetch: search failed: {e}");
+                    format!("I couldn't search for \"{query}\": {e}")
+                }
+            }
+        } else {
+            self.fetch_and_summarize(user_text).await
+        }
+    }
+
+    /// Fetch a URL and summarize its content.
+    async fn fetch_and_summarize(&mut self, user_text: &str) -> String {
         let url = self.extract_url(user_text);
 
         match url {
@@ -728,6 +762,35 @@ impl ConversationLoop {
         None
     }
 
+    /// Extract a search query from natural language, stripping leading
+    /// command words like "search for", "look up", "find", "news about".
+    fn extract_search_query(&self, text: &str) -> String {
+        let lower = text.to_lowercase();
+        let prefixes = [
+            "search for",
+            "search the web for",
+            "search",
+            "look up",
+            "look for",
+            "find me",
+            "find",
+            "news about",
+            "what's new in",
+            "what is new in",
+            "what's new",
+            "what is new",
+        ];
+        for prefix in prefixes {
+            if let Some(pos) = lower.find(prefix) {
+                let after = text[pos + prefix.len()..].trim();
+                if !after.is_empty() {
+                    return after.trim_end_matches(&['.', '!', '?'][..]).to_string();
+                }
+            }
+        }
+        text.trim().to_string()
+    }
+
     /// Get conversation history.
     pub fn history(&self) -> &[Turn] {
         &self.history
@@ -813,6 +876,29 @@ mod tests {
         loop_.process_turn("What's the time?").await.unwrap();
         assert_eq!(loop_.history().len(), 2);
         assert_eq!(loop_.total_turns(), 2);
+    }
+
+    #[test]
+    fn test_extract_search_query() {
+        let loop_ = ConversationLoop::new(ConversationConfig::default());
+        assert_eq!(
+            loop_.extract_search_query("search for new AI related news"),
+            "new AI related news"
+        );
+        assert_eq!(
+            loop_.extract_search_query("look up the weather in London"),
+            "the weather in London"
+        );
+        assert_eq!(
+            loop_.extract_search_query("find me the best coffee shops"),
+            "the best coffee shops"
+        );
+        assert_eq!(
+            loop_.extract_search_query("news about the stock market"),
+            "the stock market"
+        );
+        // No command word — returns the whole text.
+        assert_eq!(loop_.extract_search_query("hello there"), "hello there");
     }
 
     #[test]

@@ -19,7 +19,7 @@
 pub mod engine;
 pub mod extractor;
 
-pub use engine::{BrowserEngine, BrowserError, FetchResult};
+pub use engine::{BrowserEngine, BrowserError, FetchResult, SearchResult};
 pub use extractor::{
     ActionableElement, ContentLink, ConversationalFormatter, ExtractedContent,
     ExtractionMetadata, ReadabilityExtractor, TableDescription,

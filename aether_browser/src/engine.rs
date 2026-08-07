@@ -48,6 +48,15 @@ pub struct FetchResult {
     pub fetch_time_ms: u64,
 }
 
+/// A single web search result.
+#[derive(Debug, Clone)]
+pub struct SearchResult {
+    /// Result title.
+    pub title: String,
+    /// Result URL.
+    pub url: String,
+}
+
 // ---------------------------------------------------------------------------
 // Headless browser engine
 // ---------------------------------------------------------------------------
@@ -171,6 +180,70 @@ impl BrowserEngine {
         .map_err(|_| BrowserError::Timeout { url: url.to_string() })?
     }
 
+    /// Search the web via DuckDuckGo HTML and return the top results.
+    ///
+    /// Uses the lightweight HTML endpoint (no JS) so it works with a plain
+    /// HTTP client. Returns up to `limit` results.
+    pub async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>, BrowserError> {
+        use scraper::{Html, Selector};
+
+        let encoded: String = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("q", query)
+            .finish();
+        let search_url = format!("https://html.duckduckgo.com/html/?{encoded}");
+
+        debug!("BrowserEngine: searching for '{}'", query);
+
+        let response = self
+            .client
+            .get(&search_url)
+            .header("Accept", "text/html,application/xhtml+xml")
+            .send()
+            .await
+            .map_err(|e| BrowserError::HttpError(e.to_string()))?;
+
+        if !response.status().is_success() {
+            return Err(BrowserError::HttpError(format!(
+                "HTTP {} for search",
+                response.status().as_u16()
+            )));
+        }
+
+        let html = response
+            .text()
+            .await
+            .map_err(|e| BrowserError::HttpError(e.to_string()))?;
+
+        let document = Html::parse_document(&html);
+        let selector = Selector::parse("a.result__a").map_err(|e| {
+            BrowserError::ExtractionFailed(format!("bad selector: {e}"))
+        })?;
+
+        let mut results = Vec::new();
+        for el in document.select(&selector).take(limit) {
+            let title = el.text().collect::<String>().trim().to_string();
+            let mut href = el.value().attr("href").unwrap_or("").to_string();
+            // DuckDuckGo wraps result links in a redirect; decode the uddg param.
+            if let Some(pos) = href.find("uddg=") {
+                let after = &href[pos + 5..];
+                let end = after.find('&').unwrap_or(after.len());
+                if let Ok(decoded) = percent_encoding::percent_decode_str(&after[..end])
+                    .decode_utf8()
+                {
+                    href = decoded.to_string();
+                }
+            } else if href.starts_with("//") {
+                href = format!("https:{href}");
+            }
+            if !title.is_empty() {
+                results.push(SearchResult { title, url: href });
+            }
+        }
+
+        info!("BrowserEngine: search '{}' returned {} results", query, results.len());
+        Ok(results)
+    }
+
     /// Extract the page title from raw HTML.
     fn extract_title(html: &str) -> String {
         use scraper::{Html, Selector};
@@ -244,5 +317,15 @@ mod tests {
     fn test_extract_title_empty() {
         let html = "<html><head></head><body></body></html>";
         assert_eq!(BrowserEngine::extract_title(html), "Untitled");
+    }
+
+    #[test]
+    fn test_search_result_struct() {
+        let r = SearchResult {
+            title: "Example".to_string(),
+            url: "https://example.com".to_string(),
+        };
+        assert_eq!(r.title, "Example");
+        assert_eq!(r.url, "https://example.com");
     }
 }
