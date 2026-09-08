@@ -13,7 +13,7 @@ impl OnnxClassifier {
     /// Initialize sessions from a model directory. If any model is missing, that pipeline runs in fallback mode.
     pub fn new<P: AsRef<Path>>(model_dir: P) -> Self {
         let dir = model_dir.as_ref();
-        
+
         let fasttext_session = {
             let path = dir.join("fasttext_quant.onnx");
             if path.exists() {
@@ -68,6 +68,7 @@ impl OnnxClassifier {
     }
 
     /// Check if MiniLM is loaded.
+    #[allow(dead_code)]
     pub fn has_minilm(&self) -> bool {
         self.minilm_session.is_some()
     }
@@ -83,7 +84,7 @@ impl OnnxClassifier {
             .take(256)
             .map(|word| (word.len() as i64) % 10000)
             .collect();
-        
+
         if tokens.is_empty() {
             return None;
         }
@@ -99,7 +100,7 @@ impl OnnxClassifier {
             return None;
         }
         let output = &outputs_vec[0].1;
-        let (shape, data) = output.try_extract_tensor::<f32>().ok()?;
+        let (_shape, data) = output.try_extract_tensor::<f32>().ok()?;
 
         // Find argmax of scores
         let mut max_idx = 0;
@@ -112,7 +113,14 @@ impl OnnxClassifier {
         }
 
         // Mock class tags mapping
-        let classes = ["technology", "finance", "medical", "legal", "personal", "general"];
+        let classes = [
+            "technology",
+            "finance",
+            "medical",
+            "legal",
+            "personal",
+            "general",
+        ];
         Some(classes[max_idx % classes.len()].to_string())
     }
 
@@ -120,13 +128,13 @@ impl OnnxClassifier {
     pub fn classify_image(&self, image_path: &Path) -> Option<Vec<f32>> {
         let mutex = self.mobileclip_session.as_ref()?;
         let mut session = mutex.lock().ok()?;
-        
+
         if !image_path.exists() {
             return None;
         }
 
         let input_shape = [1, 3, 224, 224];
-        let mock_pixels = vec![0.5f32; 1 * 3 * 224 * 224];
+        let mock_pixels = vec![0.5f32; 3 * 224 * 224];
         let array = ndarray::Array::from_shape_vec(input_shape, mock_pixels).ok()?;
         let input_tensor = Tensor::from_array(array).ok()?;
 
@@ -136,7 +144,7 @@ impl OnnxClassifier {
             return None;
         }
         let output = &outputs_vec[0].1;
-        let (shape, data) = output.try_extract_tensor::<f32>().ok()?;
+        let (_shape, data) = output.try_extract_tensor::<f32>().ok()?;
 
         // Return the features (embedding vector)
         Some(data.to_vec())
@@ -151,15 +159,15 @@ impl OnnxClassifier {
         let words: Vec<&str> = text.split_whitespace().take(128).collect();
         let seq_len = words.len().max(1);
         let mut input_ids = vec![0i64; seq_len];
-        let mut attention_mask = vec![1i64; seq_len];
-        let mut token_type_ids = vec![0i64; seq_len];
+        let attention_mask = vec![1i64; seq_len];
+        let token_type_ids = vec![0i64; seq_len];
 
         for (i, word) in words.iter().enumerate() {
             input_ids[i] = (word.len() as i64) % 30000; // Mock mapping to vocabulary ID
         }
 
         let shape_in = [1, seq_len];
-        
+
         let arr_input_ids = ndarray::Array::from_shape_vec(shape_in, input_ids).ok()?;
         let arr_attention_mask = ndarray::Array::from_shape_vec(shape_in, attention_mask).ok()?;
         let arr_token_type_ids = ndarray::Array::from_shape_vec(shape_in, token_type_ids).ok()?;
@@ -168,11 +176,13 @@ impl OnnxClassifier {
         let tensor_attention_mask = Tensor::from_array(arr_attention_mask).ok()?;
         let tensor_token_type_ids = Tensor::from_array(arr_token_type_ids).ok()?;
 
-        let outputs = session.run(ort::inputs![
-            "input_ids" => tensor_input_ids,
-            "attention_mask" => tensor_attention_mask,
-            "token_type_ids" => tensor_token_type_ids
-        ]).ok()?;
+        let outputs = session
+            .run(ort::inputs![
+                "input_ids" => tensor_input_ids,
+                "attention_mask" => tensor_attention_mask,
+                "token_type_ids" => tensor_token_type_ids
+            ])
+            .ok()?;
 
         let outputs_vec: Vec<_> = outputs.into_iter().collect();
         if outputs_vec.is_empty() {
@@ -191,10 +201,10 @@ impl OnnxClassifier {
                     pooled[dim] += data[step * 384 + dim];
                 }
             }
-            for dim in 0..384 {
-                pooled[dim] /= seq_len_dim as f32;
+            for x in pooled.iter_mut() {
+                *x /= seq_len_dim as f32;
             }
-            
+
             // Normalize embedding to unit length
             let l2_norm = pooled.iter().map(|&x| x * x).sum::<f32>().sqrt();
             if l2_norm > 0.0 {

@@ -4,9 +4,7 @@ use tonic::transport::{Channel, Endpoint};
 use tower::service_fn;
 
 use aetherfs_proto::aetherfs::aether_engine_client::AetherEngineClient;
-use aetherfs_proto::aetherfs::{
-    VoiceSearchRequest, IndexRequest, DuplicateRequest,
-};
+use aetherfs_proto::aetherfs::{DuplicateRequest, IndexRequest, VoiceSearchRequest};
 
 #[derive(Parser)]
 #[command(name = "aetherfs")]
@@ -22,7 +20,7 @@ enum Commands {
     Search {
         /// The query text to search for
         query: String,
-        
+
         /// Optional path constraint to scope the search
         #[arg(short, long)]
         scope: Option<String>,
@@ -31,7 +29,7 @@ enum Commands {
     Index {
         /// The absolute path to scan and index
         path: String,
-        
+
         /// Whether to index directories recursively (default: true)
         #[arg(short, long, default_value_t = true)]
         recursive: bool,
@@ -52,17 +50,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match args.command {
         Commands::Search { query, scope } => {
             println!("AetherFS CLI: Initiating search for: \"{}\"", query);
-            
+
             // Build the request stream
             let req = VoiceSearchRequest {
                 session_id: uuid::Uuid::new_v4().to_string(),
-                input: Some(aetherfs_proto::aetherfs::voice_search_request::Input::TextQuery(query)),
+                input: Some(
+                    aetherfs_proto::aetherfs::voice_search_request::Input::TextQuery(query),
+                ),
                 path_scope: scope.unwrap_or_default(),
             };
 
             // Stream request
             let request_stream = tokio_stream::iter(vec![req]);
-            
+
             let response = client.live_voice_search(request_stream).await?;
             let mut response_stream = response.into_inner();
 
@@ -77,7 +77,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if !res.results.is_empty() {
                     println!("\nMatching Files Found:");
                     for (i, matched) in res.results.iter().enumerate() {
-                        println!("  {}. {} (Score: {:.2})", i + 1, matched.filename, matched.score);
+                        println!(
+                            "  {}. {} (Score: {:.2})",
+                            i + 1,
+                            matched.filename,
+                            matched.score
+                        );
                         println!("     Path: {}", matched.path);
                         println!("     Type: {}", matched.classified_type);
                         if let Some(anchor) = &matched.conversational_anchor {

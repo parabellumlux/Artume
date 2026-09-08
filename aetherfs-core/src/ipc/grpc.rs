@@ -1,17 +1,16 @@
-use std::sync::Arc;
 use std::path::Path;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
 
+use crate::index::IndexManager;
 use aetherfs_proto::aetherfs::aether_engine_server::AetherEngine;
 use aetherfs_proto::aetherfs::{
-    VoiceSearchRequest, VoiceSearchResponse, IndexRequest, IndexResponse,
-    DuplicateRequest, DuplicateResponse, DuplicateGroup, FileMatch, ConversationalAnchor,
-    IndexConversationRequest, IndexConversationResponse,
-    SearchConversationRequest, SearchConversationResponse, ConversationTurn,
+    ConversationTurn, ConversationalAnchor, DuplicateGroup, DuplicateRequest, DuplicateResponse,
+    FileMatch, IndexConversationRequest, IndexConversationResponse, IndexRequest, IndexResponse,
+    SearchConversationRequest, SearchConversationResponse, VoiceSearchRequest, VoiceSearchResponse,
 };
-use crate::index::IndexManager;
 
 pub struct AetherEngineService {
     index_manager: Arc<IndexManager>,
@@ -38,10 +37,12 @@ impl AetherEngine for AetherEngineService {
         tokio::spawn(async move {
             while let Ok(Some(req)) = stream.message().await {
                 let session_id = req.session_id.clone();
-                
+
                 // Extract query text
                 let query_text = match &req.input {
-                    Some(aetherfs_proto::aetherfs::voice_search_request::Input::TextQuery(txt)) => txt.clone(),
+                    Some(aetherfs_proto::aetherfs::voice_search_request::Input::TextQuery(txt)) => {
+                        txt.clone()
+                    }
                     Some(aetherfs_proto::aetherfs::voice_search_request::Input::AudioChunk(_)) => {
                         // Mock speech-to-text transcription for voice channel.
                         // In production, we'd pipe audio into a Whisper/ONNX Speech engine.
@@ -55,14 +56,16 @@ impl AetherEngine for AetherEngineService {
                 }
 
                 // Send processing status
-                let _ = tx.send(Ok(VoiceSearchResponse {
-                    session_id: session_id.clone(),
-                    status: 0, // PROCESSING
-                    partial_transcription: query_text.clone(),
-                    spoken_summary: "".to_string(),
-                    results: vec![],
-                    error_message: "".to_string(),
-                })).await;
+                let _ = tx
+                    .send(Ok(VoiceSearchResponse {
+                        session_id: session_id.clone(),
+                        status: 0, // PROCESSING
+                        partial_transcription: query_text.clone(),
+                        spoken_summary: "".to_string(),
+                        results: vec![],
+                        error_message: "".to_string(),
+                    }))
+                    .await;
 
                 // Execute Hybrid Search (Lexical FTS5 + Semantic Vector)
                 let start_time = std::time::Instant::now();
@@ -92,7 +95,11 @@ impl AetherEngine for AetherEngineService {
                 let spoken_summary = if results.is_empty() {
                     format!("I couldn't find any files matching {}.", query_text)
                 } else {
-                    format!("I found {} matches. The top match is {}.", results.len(), results[0].filename)
+                    format!(
+                        "I found {} matches. The top match is {}.",
+                        results.len(),
+                        results[0].filename
+                    )
                 };
 
                 // Send finished results
@@ -120,7 +127,7 @@ impl AetherEngine for AetherEngineService {
     ) -> Result<Response<IndexResponse>, Status> {
         let req = request.into_inner();
         let path = std::path::PathBuf::from(&req.directory_path);
-        
+
         if !path.exists() {
             return Err(Status::invalid_argument("Directory path does not exist"));
         }
@@ -131,13 +138,16 @@ impl AetherEngine for AetherEngineService {
         tokio::spawn(async move {
             // Traverse directory recursively and register files.
             // Let's implement directory scanner logic.
-            println!("AetherFS Background: Starting directory scan of {}", path.display());
+            println!(
+                "AetherFS Background: Starting directory scan of {}",
+                path.display()
+            );
             let mut scanned = 0;
-            
+
             // Re-use core scanner setup (this would trigger daemon's scanner logic)
             // For now, print status
             let filter = crate::filter::PathFilter::default();
-            let mut governor = crate::governor::CpuGovernor::new(0.35);
+            let mut governor = crate::governor::CpuGovernor::new(0.15);
 
             fn scan_dir(
                 dir: &std::path::Path,
@@ -145,9 +155,18 @@ impl AetherEngine for AetherEngineService {
                 flt: &crate::filter::PathFilter,
                 gov: &mut crate::governor::CpuGovernor,
                 counter: &mut i64,
+                visited: &mut std::collections::HashSet<std::path::PathBuf>,
             ) {
                 if flt.should_exclude(dir) {
                     return;
+                }
+
+                // Cycle detection: canonicalize the dir and skip if already visited.
+                // This prevents infinite recursion through symlink loops or bind mounts.
+                if let Ok(canon) = dir.canonicalize() {
+                    if !visited.insert(canon) {
+                        return;
+                    }
                 }
 
                 if let Ok(entries) = std::fs::read_dir(dir) {
@@ -158,7 +177,7 @@ impl AetherEngine for AetherEngineService {
                         }
 
                         if path.is_dir() {
-                            scan_dir(&path, mgr, flt, gov, counter);
+                            scan_dir(&path, mgr, flt, gov, counter, visited);
                         } else if path.is_file() {
                             if let Ok(metadata) = entry.metadata() {
                                 let size = metadata.len() as i64;
@@ -168,6 +187,12 @@ impl AetherEngine for AetherEngineService {
                                     .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                                     .map(|d| d.as_secs() as i64)
                                     .unwrap_or(0);
+
+                                // Skip very large files (> 10 MB) to keep CPU/memory low.
+                                // They're almost always binaries/build artifacts, not code.
+                                if size > 10 * 1024 * 1024 {
+                                    continue;
+                                }
 
                                 // Background tasks must run on low thread priority & throttled
                                 gov.start_work();
@@ -179,18 +204,35 @@ impl AetherEngine for AetherEngineService {
                                 let mut sparse_hash: Option<String> = None;
                                 let mut full_hash: Option<String> = None;
 
-                                if let Ok(candidates) = mgr.sqlite().find_files_by_size(size, &path.to_string_lossy()) {
+                                if let Ok(candidates) = mgr
+                                    .sqlite()
+                                    .find_files_by_size(size, &path.to_string_lossy())
+                                {
                                     if !candidates.is_empty() {
                                         // Compute sparse hash (Stage 2)
-                                        if let Ok(sh) = crate::dedup::DedupPipeline::calculate_sparse_hash(&path, size as u64) {
+                                        if let Ok(sh) =
+                                            crate::dedup::DedupPipeline::calculate_sparse_hash(
+                                                &path,
+                                                size as u64,
+                                            )
+                                        {
                                             let sh_str = sh.to_string();
                                             sparse_hash = Some(sh_str.clone());
 
-                                            for cand in candidates {
+                                            // Compute the current file's full hash ONCE (not per-candidate).
+                                            // This avoids the O(n^2) blowup when many files share a size.
+                                            let current_full_hash =
+                                                crate::dedup::DedupPipeline::calculate_full_hash(
+                                                    &path,
+                                                )
+                                                .ok();
+
+                                            // Cap candidate checks to bound worst-case CPU cost.
+                                            for cand in candidates.iter().take(20) {
                                                 if cand.sparse_hash.as_ref() == Some(&sh_str) {
                                                     // Compute full hash (Stage 3)
-                                                    if let (Ok(fh), Ok(cand_fh_bytes)) = (
-                                                        crate::dedup::DedupPipeline::calculate_full_hash(&path),
+                                                    if let (Some(fh), Ok(cand_fh_bytes)) = (
+                                                        current_full_hash,
                                                         crate::dedup::DedupPipeline::calculate_full_hash(Path::new(&cand.path)),
                                                     ) {
                                                         let fh_str = fh.to_string();
@@ -212,13 +254,15 @@ impl AetherEngine for AetherEngineService {
                                 // Index file in the database
                                 let _ = tokio::task::block_in_place(|| {
                                     futures::executor::block_on(mgr.index_file(
-                                        &path,
-                                        size,
-                                        modified,
-                                        sparse_hash,
-                                        full_hash,
-                                        is_duplicate,
-                                        canonical_path,
+                                        crate::index::FileMeta {
+                                            path: &path,
+                                            size_bytes: size,
+                                            modified_time: modified,
+                                            sparse_hash,
+                                            full_hash,
+                                            is_duplicate,
+                                            canonical_path,
+                                        },
                                     ))
                                 });
 
@@ -232,8 +276,20 @@ impl AetherEngine for AetherEngineService {
                 }
             }
 
-            scan_dir(&path, &manager, &filter, &mut governor, &mut scanned);
-            println!("AetherFS Background: Completed directory scan. Indexed {} files.", scanned);
+            let mut visited: std::collections::HashSet<std::path::PathBuf> =
+                std::collections::HashSet::new();
+            scan_dir(
+                &path,
+                &manager,
+                &filter,
+                &mut governor,
+                &mut scanned,
+                &mut visited,
+            );
+            println!(
+                "AetherFS Background: Completed directory scan. Indexed {} files.",
+                scanned
+            );
         });
 
         Ok(Response::new(IndexResponse {
@@ -291,22 +347,32 @@ impl AetherEngine for AetherEngineService {
         request: Request<SearchConversationRequest>,
     ) -> Result<Response<SearchConversationResponse>, Status> {
         let req = request.into_inner();
-        let limit = if req.limit <= 0 { 10 } else { req.limit as usize };
+        let limit = if req.limit <= 0 {
+            10
+        } else {
+            req.limit as usize
+        };
 
-        match self.index_manager.sqlite().search_conversation(&req.query, limit) {
+        match self
+            .index_manager
+            .sqlite()
+            .search_conversation(&req.query, limit)
+        {
             Ok(results) => {
                 let turns: Vec<ConversationTurn> = results
                     .into_iter()
-                    .map(|(session_id, user_text, assistant_response, intent, timestamp, score)| {
-                        ConversationTurn {
-                            session_id,
-                            user_text,
-                            assistant_response,
-                            intent,
-                            timestamp_unix: timestamp,
-                            score,
-                        }
-                    })
+                    .map(
+                        |(session_id, user_text, assistant_response, intent, timestamp, score)| {
+                            ConversationTurn {
+                                session_id,
+                                user_text,
+                                assistant_response,
+                                intent,
+                                timestamp_unix: timestamp,
+                                score,
+                            }
+                        },
+                    )
                     .collect();
                 Ok(Response::new(SearchConversationResponse { results: turns }))
             }

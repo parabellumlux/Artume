@@ -1,13 +1,13 @@
 pub mod grpc;
 
-use std::sync::Arc;
-use std::path::Path;
-use tonic::transport::Server;
-use aetherfs_proto::aetherfs::aether_engine_server::AetherEngineServer;
 use crate::index::IndexManager;
+use aetherfs_proto::aetherfs::aether_engine_server::AetherEngineServer;
 use grpc::AetherEngineService;
+use std::path::Path;
+use std::sync::Arc;
+use tonic::transport::Server;
 
-/// Starts the gRPC IPC server. 
+/// Starts the gRPC IPC server.
 /// On Unix systems, it binds to a Unix Domain Socket (UDS) path (e.g. `/var/run/aetherfs.sock` or a local fallback).
 /// On Windows systems, it binds to a TCP port or localhost loopback for convenience and speed compatibility.
 pub async fn start_ipc_server(
@@ -19,8 +19,11 @@ pub async fn start_ipc_server(
 
     #[cfg(unix)]
     {
-        println!("AetherFS IPC: Binding to Unix Domain Socket at '{}'", socket_path);
-        
+        println!(
+            "AetherFS IPC: Binding to Unix Domain Socket at '{}'",
+            socket_path
+        );
+
         // Ensure the directory for the socket path exists
         if let Some(parent) = Path::new(socket_path).parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -44,11 +47,11 @@ pub async fn start_ipc_server(
     {
         // On Windows or other non-unix systems, bind to local loopback (e.g. 127.0.0.1:50051)
         let addr = "127.0.0.1:50051".parse()?;
-        println!("AetherFS IPC: Unix domain sockets not supported. Binding to TCP local loopback at {}", addr);
-        Server::builder()
-            .add_service(server)
-            .serve(addr)
-            .await?;
+        println!(
+            "AetherFS IPC: Unix domain sockets not supported. Binding to TCP local loopback at {}",
+            addr
+        );
+        Server::builder().add_service(server).serve(addr).await?;
     }
 
     Ok(())

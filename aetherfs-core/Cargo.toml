@@ -2,6 +2,11 @@
 name = "aetherfs-core"
 version = "0.1.0"
 edition = "2021"
+description = "AetherFS content-addressed storage engine with semantic search and deduplication"
+
+[features]
+default = []
+pdf-extract = ["dep:pdf-extract"]
 
 [dependencies]
 aetherfs-proto = { path = "../aetherfs-proto" }
@@ -28,6 +33,7 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 
 dirs = "5"
 tokio-stream = { version = "0.1.15", features = ["net"] }
+pdf-extract = { version = "0.7", optional = true }
 
 
 

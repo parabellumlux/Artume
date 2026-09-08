@@ -31,7 +31,9 @@ pub fn classify_magic(path: &Path) -> std::io::Result<&'static str> {
             // Check if it's text (simple utf-8 check on first few bytes)
             if is_utf8(&header[..bytes_read]) {
                 // If it starts with JSON structure
-                let trimmed = header[..bytes_read].iter().find(|&&b| !b.is_ascii_whitespace());
+                let trimmed = header[..bytes_read]
+                    .iter()
+                    .find(|&&b| !b.is_ascii_whitespace());
                 if let Some(&b'{') | Some(&b'[') = trimmed {
                     return Ok("text/json");
                 }

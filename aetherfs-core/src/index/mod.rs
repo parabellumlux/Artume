@@ -1,12 +1,12 @@
-pub mod sqlite;
 pub mod qdrant;
+pub mod sqlite;
 
-use std::path::Path;
-use chrono::{DateTime, Utc, Local, Timelike};
-use sqlite::{SqliteIndex, DbFileRecord, DbContentChunk};
-use qdrant::QdrantIndex;
 use crate::classifier::FileClassifier;
-use crate::extract::{extract_text, chunk_text, ContentChunk};
+use crate::extract::{chunk_text, extract_text, ContentChunk};
+use chrono::{DateTime, Local, Timelike, Utc};
+use qdrant::QdrantIndex;
+use sqlite::{DbContentChunk, DbFileRecord, SqliteIndex};
+use std::path::Path;
 
 pub struct IndexManager {
     sqlite: SqliteIndex,
@@ -25,6 +25,17 @@ pub struct SearchResult {
     pub temporal_context: String,
     pub location_context: String,
     pub has_duplicates: bool,
+}
+
+/// Metadata captured during a filesystem scan for a file pending indexing.
+pub struct FileMeta<'a> {
+    pub path: &'a Path,
+    pub size_bytes: i64,
+    pub modified_time: i64,
+    pub sparse_hash: Option<String>,
+    pub full_hash: Option<String>,
+    pub is_duplicate: bool,
+    pub canonical_path: Option<String>,
 }
 
 impl IndexManager {
@@ -58,6 +69,7 @@ impl IndexManager {
     }
 
     /// Access underlying classifier.
+    #[allow(dead_code)]
     pub fn classifier(&self) -> &FileClassifier {
         &self.classifier
     }
@@ -65,14 +77,15 @@ impl IndexManager {
     /// Indexes a single file: Classifies, extracts content, generates spoken summaries/anchors, computes embeddings, and updates databases.
     pub async fn index_file(
         &self,
-        path: &Path,
-        size_bytes: i64,
-        modified_time: i64,
-        sparse_hash: Option<String>,
-        full_hash: Option<String>,
-        is_duplicate: bool,
-        canonical_path: Option<String>,
+        meta: FileMeta<'_>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let path = meta.path;
+        let size_bytes = meta.size_bytes;
+        let modified_time = meta.modified_time;
+        let sparse_hash = meta.sparse_hash;
+        let full_hash = meta.full_hash;
+        let is_duplicate = meta.is_duplicate;
+        let canonical_path = meta.canonical_path;
         let filename = path
             .file_name()
             .unwrap_or_default()
@@ -83,7 +96,8 @@ impl IndexManager {
         let (classified_type, detail_tag) = self.classifier.classify(path);
 
         // 2. Generate Conversational Anchors
-        let spoken_summary = generate_spoken_summary(&filename, &classified_type, &detail_tag, size_bytes);
+        let spoken_summary =
+            generate_spoken_summary(&filename, &classified_type, &detail_tag, size_bytes);
         let temporal_context = generate_temporal_context(modified_time);
         let location_context = generate_location_context(path);
 
@@ -137,8 +151,14 @@ impl IndexManager {
             record.filename, record.classified_type, record.spoken_summary, record.temporal_context
         );
         if let Some(embedding) = self.classifier.get_text_embedding(&text_to_embed) {
-            let _ = self.qdrant
-                .upsert_vector(&record.path, embedding, &record.classified_type, &record.spoken_summary)
+            let _ = self
+                .qdrant
+                .upsert_vector(
+                    &record.path,
+                    embedding,
+                    &record.classified_type,
+                    &record.spoken_summary,
+                )
                 .await;
         }
 
@@ -146,8 +166,14 @@ impl IndexManager {
         for chunk in &content_chunks {
             if let Some(embedding) = self.classifier.get_text_embedding(&chunk.text) {
                 let chunk_id = format!("{}#chunk{}", chunk.source_path, chunk.chunk_index);
-                let _ = self.qdrant
-                    .upsert_vector(&chunk_id, embedding, &format!("{}_chunk", record.classified_type), &chunk.text)
+                let _ = self
+                    .qdrant
+                    .upsert_vector(
+                        &chunk_id,
+                        embedding,
+                        &format!("{}_chunk", record.classified_type),
+                        &chunk.text,
+                    )
                     .await;
             }
         }
@@ -156,7 +182,10 @@ impl IndexManager {
     }
 
     /// Remove a file from the index: SQLite record + chunks, and Qdrant vectors.
-    pub async fn delete_file(&self, path: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn delete_file(
+        &self,
+        path: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Remove from SQLite (FTS5 triggers keep lexical tables in sync).
         let deleted = self.sqlite.delete_file(path)?;
         if deleted == 0 {
@@ -166,7 +195,10 @@ impl IndexManager {
 
         // Remove vectors from Qdrant (best-effort; Qdrant may be offline).
         if let Err(e) = self.qdrant.delete_vector(path).await {
-            eprintln!("AetherFS Indexer: failed to delete Qdrant vectors for {}: {}", path, e);
+            eprintln!(
+                "AetherFS Indexer: failed to delete Qdrant vectors for {}: {}",
+                path, e
+            );
         }
 
         Ok(())
@@ -198,7 +230,11 @@ impl IndexManager {
 
         // 2. Semantic search (Qdrant)
         if let Some(query_embedding) = self.classifier.get_text_embedding(query_text) {
-            if let Ok(semantic_matches) = self.qdrant.search_vector(query_embedding, limit as u64).await {
+            if let Ok(semantic_matches) = self
+                .qdrant
+                .search_vector(query_embedding, limit as u64)
+                .await
+            {
                 for (path, score, _) in semantic_matches {
                     if let Ok(Some(rec)) = self.sqlite.get_file(&path) {
                         if let Some(existing) = combined_results.get_mut(&path) {
@@ -227,7 +263,11 @@ impl IndexManager {
 
         // 3. Sort by score descending and return
         let mut results: Vec<SearchResult> = combined_results.into_values().collect();
-        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         results.truncate(limit);
         results
     }
@@ -254,7 +294,11 @@ fn generate_spoken_summary(filename: &str, mime: &str, details: &str, size_bytes
         _ => "unclassified file",
     };
 
-    let detail_desc = if details.is_empty() || details == "binary" || details == "raw text" || details == "raw image" {
+    let detail_desc = if details.is_empty()
+        || details == "binary"
+        || details == "raw text"
+        || details == "raw image"
+    {
         "".to_string()
     } else {
         format!(", containing {}", details)
@@ -294,7 +338,10 @@ fn generate_temporal_context(modified_time_secs: i64) -> String {
     } else if diff < 604800 {
         let days = diff / 86400;
         let day_of_week = dt.format("%A").to_string();
-        format!("modified {} days ago on {} at {}", days, day_of_week, time_str)
+        format!(
+            "modified {} days ago on {} at {}",
+            days, day_of_week, time_str
+        )
     } else {
         let date_str = dt.format("%B %d, %Y").to_string();
         format!("modified on {} at {}", date_str, time_str)
@@ -304,9 +351,12 @@ fn generate_temporal_context(modified_time_secs: i64) -> String {
 // Generate relative physical/logical context for files
 fn generate_location_context(path: &Path) -> String {
     let path_str = path.to_string_lossy();
-    if path_str.contains("/home/") {
-        "stored inside your personal user profile".to_string()
-    } else if path_str.contains("/media/") || path_str.contains("/mnt/") {
+    if let Some(home) = dirs::home_dir() {
+        if path.starts_with(&home) {
+            return "stored inside your personal user profile".to_string();
+        }
+    }
+    if path_str.contains("/media/") || path_str.contains("/mnt/") {
         "stored on a connected external storage drive".to_string()
     } else {
         "stored in the system hierarchy".to_string()

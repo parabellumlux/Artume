@@ -17,8 +17,10 @@ pub struct ContentChunk {
     /// The extracted text content.
     pub text: String,
     /// Character offset in the original document.
+    #[allow(dead_code)]
     pub char_start: usize,
     /// Character length of this chunk.
+    #[allow(dead_code)]
     pub char_len: usize,
 }
 
@@ -33,20 +35,16 @@ pub fn extract_text(path: &Path) -> Option<String> {
 
     match ext.as_str() {
         // Plain text formats
-        "txt" | "md" | "markdown" | "rst" | "log" | "cfg" | "ini" | "conf" | "toml"
-        | "yaml" | "yml" | "json" | "xml" | "csv" | "tsv" => {
-            std::fs::read_to_string(path).ok()
-        }
+        "txt" | "md" | "markdown" | "rst" | "log" | "cfg" | "ini" | "conf" | "toml" | "yaml"
+        | "yml" | "json" | "xml" | "csv" | "tsv" => std::fs::read_to_string(path).ok(),
 
         // Code files
-        "rs" | "py" | "js" | "ts" | "jsx" | "tsx" | "go" | "java" | "c" | "cpp" | "h"
-        | "hpp" | "rb" | "php" | "swift" | "kt" | "scala" | "clj" | "cljs" | "elm"
-        | "hs" | "lua" | "sh" | "bash" | "zsh" | "fish" | "ps1" | "bat" | "sql"
-        | "r" | "m" | "mm" | "pl" | "pm" | "t" | "dart" | "zig" | "nim" | "ex"
-        | "exs" | "cr" | "svelte" | "vue" | "css" | "scss" | "less" | "html" | "htm"
-        | "dockerfile" | "makefile" | "cmake" | "gradle" | "proto" | "graphql" | "gql" => {
-            std::fs::read_to_string(path).ok()
-        }
+        "rs" | "py" | "js" | "ts" | "jsx" | "tsx" | "go" | "java" | "c" | "cpp" | "h" | "hpp"
+        | "rb" | "php" | "swift" | "kt" | "scala" | "clj" | "cljs" | "elm" | "hs" | "lua"
+        | "sh" | "bash" | "zsh" | "fish" | "ps1" | "bat" | "sql" | "r" | "m" | "mm" | "pl"
+        | "pm" | "t" | "dart" | "zig" | "nim" | "ex" | "exs" | "cr" | "svelte" | "vue" | "css"
+        | "scss" | "less" | "html" | "htm" | "dockerfile" | "makefile" | "cmake" | "gradle"
+        | "proto" | "graphql" | "gql" => std::fs::read_to_string(path).ok(),
 
         // PDF — requires pdf-extract or similar
         "pdf" => extract_pdf_text(path),
@@ -212,6 +210,17 @@ pub fn chunk_text(text: &str, target_chars: usize) -> Vec<(usize, String)> {
         return vec![(0, text.to_string())];
     }
 
+    // Collect char boundaries so we never slice mid-UTF-8-char.
+    let boundaries: Vec<usize> = text.char_indices().map(|(i, _)| i).collect();
+    // Snap a byte index to the nearest char boundary at or below it.
+    let snap = |idx: usize| -> usize {
+        match boundaries.binary_search(&idx) {
+            Ok(i) => boundaries[i],
+            Err(0) => 0,
+            Err(i) => boundaries[i - 1],
+        }
+    };
+
     let mut chunks = Vec::new();
     let mut start = 0;
     let mut chunk_idx = 0;
@@ -221,14 +230,14 @@ pub fn chunk_text(text: &str, target_chars: usize) -> Vec<(usize, String)> {
             text.len()
         } else {
             // Try to break at a sentence boundary near the target
-            let search_start = (start + target_chars).saturating_sub(target_chars / 4);
-            let search_end = (start + target_chars + target_chars / 4).min(text.len());
+            let search_start = snap((start + target_chars).saturating_sub(target_chars / 4));
+            let search_end = snap((start + target_chars + target_chars / 4).min(text.len()));
 
             // Look for sentence-ending punctuation followed by space or newline
             let slice = &text[search_start..search_end];
             let mut break_pos = None;
 
-            for (i, pat) in [". ", "! ", "? ", ".\n", "!\n", "?\n", "\n\n"].iter().enumerate() {
+            for pat in [". ", "! ", "? ", ".\n", "!\n", "?\n", "\n\n"].iter() {
                 if let Some(pos) = slice.rfind(pat) {
                     let candidate = search_start + pos + pat.len();
                     // Prefer later breaks (closer to target)
@@ -245,8 +254,8 @@ pub fn chunk_text(text: &str, target_chars: usize) -> Vec<(usize, String)> {
                 }
             }
 
-            // If still nothing, hard break at target
-            break_pos.unwrap_or(start + target_chars)
+            // If still nothing, hard break at target (snapped to a char boundary)
+            snap(break_pos.unwrap_or(start + target_chars))
         };
 
         let chunk_text = text[start..end].trim().to_string();
@@ -289,9 +298,14 @@ mod tests {
 
     #[test]
     fn test_chunk_text_large() {
-        let text = "First sentence. Second sentence. Third sentence. Fourth sentence. Fifth sentence. ";
+        let text =
+            "First sentence. Second sentence. Third sentence. Fourth sentence. Fifth sentence. ";
         let chunks = chunk_text(text, 30);
-        assert!(chunks.len() >= 2, "Should produce multiple chunks, got {}", chunks.len());
+        assert!(
+            chunks.len() >= 2,
+            "Should produce multiple chunks, got {}",
+            chunks.len()
+        );
         // Each chunk should be non-empty
         for (_, chunk) in &chunks {
             assert!(!chunk.is_empty());
@@ -304,7 +318,9 @@ mod tests {
         let chunks = chunk_text(text, 60);
         assert!(chunks.len() >= 2);
         // First chunk should end with a complete sentence
-        assert!(chunks[0].1.ends_with('.') || chunks[0].1.ends_with('!') || chunks[0].1.ends_with('?'));
+        assert!(
+            chunks[0].1.ends_with('.') || chunks[0].1.ends_with('!') || chunks[0].1.ends_with('?')
+        );
     }
 
     #[test]

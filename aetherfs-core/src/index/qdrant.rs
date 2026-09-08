@@ -1,9 +1,9 @@
-use qdrant_client::Qdrant;
-use qdrant_client::qdrant::{
-    CreateCollection, Distance, PointId, PointStruct, SearchPoints, VectorParams, VectorsConfig,
-    UpsertPointsBuilder,
-};
 use qdrant_client::qdrant::vectors_config::Config;
+use qdrant_client::qdrant::{
+    CreateCollection, Distance, PointId, PointStruct, SearchPoints, UpsertPointsBuilder,
+    VectorParams, VectorsConfig,
+};
+use qdrant_client::Qdrant;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -19,7 +19,10 @@ impl QdrantIndex {
         let client = match Qdrant::from_url(url).build() {
             Ok(c) => Some(Arc::new(c)),
             Err(e) => {
-                eprintln!("AetherFS Qdrant: Failed to build Qdrant Client at {}: {}", url, e);
+                eprintln!(
+                    "AetherFS Qdrant: Failed to build Qdrant Client at {}: {}",
+                    url, e
+                );
                 None
             }
         };
@@ -37,9 +40,15 @@ impl QdrantIndex {
             None => return Err("Qdrant client not initialized".into()),
         };
 
-        let has_collection = client.collection_exists(&self.collection_name).await.unwrap_or(false);
+        let has_collection = client
+            .collection_exists(&self.collection_name)
+            .await
+            .unwrap_or(false);
         if !has_collection {
-            println!("AetherFS Qdrant: Collection '{}' not found, creating it...", self.collection_name);
+            println!(
+                "AetherFS Qdrant: Collection '{}' not found, creating it...",
+                self.collection_name
+            );
             client
                 .create_collection(CreateCollection {
                     collection_name: self.collection_name.clone(),
@@ -53,9 +62,15 @@ impl QdrantIndex {
                     ..Default::default()
                 })
                 .await?;
-            println!("AetherFS Qdrant: Collection '{}' created successfully", self.collection_name);
+            println!(
+                "AetherFS Qdrant: Collection '{}' created successfully",
+                self.collection_name
+            );
         } else {
-            println!("AetherFS Qdrant: Collection '{}' verified", self.collection_name);
+            println!(
+                "AetherFS Qdrant: Collection '{}' verified",
+                self.collection_name
+            );
         }
 
         Ok(())
@@ -84,11 +99,7 @@ impl QdrantIndex {
         });
         let payload: qdrant_client::Payload = payload_json.try_into()?;
 
-        let point = PointStruct::new(
-            PointId::from(point_uuid),
-            embedding,
-            payload,
-        );
+        let point = PointStruct::new(PointId::from(point_uuid), embedding, payload);
 
         client
             .upsert_points(UpsertPointsBuilder::new(&self.collection_name, vec![point]))
@@ -122,7 +133,7 @@ impl QdrantIndex {
         for point in response.result {
             let score = point.score;
             let payload = point.payload;
-            
+
             let path = payload
                 .get("path")
                 .and_then(|v| v.as_str())

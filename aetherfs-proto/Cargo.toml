@@ -2,6 +2,7 @@
 name = "aetherfs-proto"
 version = "0.1.0"
 edition = "2021"
+description = "gRPC protocol definitions for AetherFS IPC communication"
 
 [dependencies]
 tonic = "0.11"

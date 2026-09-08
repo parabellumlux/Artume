@@ -24,6 +24,16 @@ impl Default for PathFilter {
                 "dist",
                 ".idea",
                 ".vscode",
+                ".gradle",
+                ".expo",
+                ".dart_tool",
+                ".next",
+                ".cache",
+                "Pods",
+                ".terraform",
+                ".mypy_cache",
+                ".pytest_cache",
+                "__pycache__",
                 "System Volume Information",
                 "$RECYCLE.BIN",
             ],
@@ -38,8 +48,8 @@ impl Default for PathFilter {
                 "/lost+found",
             ],
             ignored_extensions: vec![
-                "dll", "so", "exe", "pyc", "dylib", "o", "a", "lib", 
-                "bin", "msi", "dmg", "iso", "class", "pdb", "suo",
+                "dll", "so", "exe", "pyc", "dylib", "o", "a", "lib", "bin", "msi", "dmg", "iso",
+                "class", "pdb", "suo",
             ],
         }
     }
@@ -67,7 +77,8 @@ impl PathFilter {
         #[cfg(target_os = "windows")]
         {
             let lower_path = path_str.to_lowercase();
-            if lower_path.starts_with("c:\\windows") || lower_path.starts_with("c:\\program files") {
+            if lower_path.starts_with("c:\\windows") || lower_path.starts_with("c:\\program files")
+            {
                 return true;
             }
         }

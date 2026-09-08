@@ -30,11 +30,19 @@ pub struct DbContentChunk {
     pub content: String,
 }
 
+/// A conversation-history search hit: session id, user text, assistant response,
+/// intent, unix timestamp, and BM25 relevance score.
+pub type ConversationHit = (String, String, String, String, i64, f32);
+
+/// A duplicate file group: canonical path, size in bytes, full hash, and the
+/// list of non-canonical paths sharing that hash.
+pub type DuplicateGroup = (String, i64, String, Vec<String>);
+
 impl SqliteIndex {
     /// Open or create the SQLite database file.
     pub fn new<P: AsRef<Path>>(db_path: P) -> Result<Self> {
         let conn = Connection::open(db_path)?;
-        
+
         // Enable foreign keys
         conn.execute("PRAGMA foreign_keys = ON;", [])?;
 
@@ -46,7 +54,7 @@ impl SqliteIndex {
     }
 
     fn initialize_schema(&self) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
 
         // Core files metadata table
         conn.execute(
@@ -213,12 +221,11 @@ impl SqliteIndex {
         )?;
 
         Ok(())
-
     }
 
     /// Insert or update a file record.
     pub fn upsert_file(&self, record: &DbFileRecord) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "INSERT INTO files (
                 path, filename, size_bytes, modified_time, classified_type, 
@@ -256,7 +263,7 @@ impl SqliteIndex {
 
     /// Insert or update a content chunk for RAG.
     pub fn upsert_chunk(&self, chunk: &DbContentChunk) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "INSERT INTO file_chunks (source_path, chunk_index, content)
              VALUES (?1, ?2, ?3)
@@ -268,9 +275,10 @@ impl SqliteIndex {
     }
 
     /// Search content chunks by FTS5 lexical match.
+    #[allow(dead_code)]
     pub fn search_chunks(&self, query_text: &str) -> Result<Vec<(DbContentChunk, f32)>> {
-        let conn = self.conn.lock().unwrap();
-        let safe_query = query_text.replace('"', "").replace('\'', "");
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let safe_query = query_text.replace(['"', '\''], "");
         if safe_query.trim().is_empty() {
             return Ok(Vec::new());
         }
@@ -311,7 +319,7 @@ impl SqliteIndex {
         intent: &str,
         timestamp_unix: i64,
     ) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "INSERT INTO conversation_history (session_id, user_text, assistant_response, intent, timestamp_unix)
              VALUES (?1, ?2, ?3, ?4, ?5);",
@@ -321,9 +329,13 @@ impl SqliteIndex {
     }
 
     /// Search conversation history by FTS5 lexical match.
-    pub fn search_conversation(&self, query_text: &str, limit: usize) -> Result<Vec<(String, String, String, String, i64, f32)>> {
-        let conn = self.conn.lock().unwrap();
-        let safe_query = query_text.replace('"', "").replace('\'', "");
+    pub fn search_conversation(
+        &self,
+        query_text: &str,
+        limit: usize,
+    ) -> Result<Vec<ConversationHit>> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let safe_query = query_text.replace(['"', '\''], "");
         if safe_query.trim().is_empty() {
             return Ok(Vec::new());
         }
@@ -345,7 +357,14 @@ impl SqliteIndex {
             let timestamp: i64 = row.get(4)?;
             let bm25_score: f64 = row.get(5)?;
             let score = (-bm25_score) as f32;
-            Ok((session_id, user_text, assistant_response, intent, timestamp, score))
+            Ok((
+                session_id,
+                user_text,
+                assistant_response,
+                intent,
+                timestamp,
+                score,
+            ))
         })?;
 
         let mut results = Vec::new();
@@ -356,8 +375,8 @@ impl SqliteIndex {
     }
 
     /// Retrieve all duplicate records.
-    pub fn get_duplicate_groups(&self) -> Result<Vec<(String, i64, String, Vec<String>)>> {
-        let conn = self.conn.lock().unwrap();
+    pub fn get_duplicate_groups(&self) -> Result<Vec<DuplicateGroup>> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         // Query duplicate files grouped by their full_hash and size
         let mut stmt = conn.prepare(
             "SELECT canonical_path, size_bytes, full_hash, GROUP_CONCAT(path)
@@ -384,7 +403,7 @@ impl SqliteIndex {
 
     /// Query for files with the exact same size (stage 1 of deduplication).
     pub fn find_files_by_size(&self, size: i64, exclude_path: &str) -> Result<Vec<DbFileRecord>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
             "SELECT path, filename, size_bytes, modified_time, classified_type,
                     sparse_hash, full_hash, is_duplicate, canonical_path,
@@ -403,9 +422,9 @@ impl SqliteIndex {
 
     /// Query using FTS5 (lexical search).
     pub fn search_lexical(&self, query_text: &str) -> Result<Vec<(DbFileRecord, f32)>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         // Clean query text for FTS5 syntax safety
-        let safe_query = query_text.replace('"', "").replace('\'', "");
+        let safe_query = query_text.replace(['"', '\''], "");
         if safe_query.trim().is_empty() {
             return Ok(Vec::new());
         }
@@ -438,7 +457,7 @@ impl SqliteIndex {
 
     /// Fetch a file record by its path.
     pub fn get_file(&self, path: &str) -> Result<Option<DbFileRecord>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
             "SELECT path, filename, size_bytes, modified_time, classified_type,
                     sparse_hash, full_hash, is_duplicate, canonical_path,
@@ -460,9 +479,12 @@ impl SqliteIndex {
     /// The FTS5 triggers (`files_ad`, `chunks_ad`) keep the lexical search
     /// tables in sync automatically. Returns the number of file rows deleted.
     pub fn delete_file(&self, path: &str) -> Result<usize> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         // Delete chunks first (they reference the path), then the file row.
-        conn.execute("DELETE FROM file_chunks WHERE source_path = ?1;", params![path])?;
+        conn.execute(
+            "DELETE FROM file_chunks WHERE source_path = ?1;",
+            params![path],
+        )?;
         let deleted = conn.execute("DELETE FROM files WHERE path = ?1;", params![path])?;
         Ok(deleted)
     }

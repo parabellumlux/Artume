@@ -1,5 +1,4 @@
 use std::time::{Duration, Instant};
-use tokio::time::sleep;
 
 /// Set the calling thread to background/idle priority based on the platform.
 pub fn set_background_priority() {
@@ -82,9 +81,13 @@ impl CpuGovernor {
             let sleep_ms = self.accumulated_work_ms * sleep_ratio;
 
             if sleep_ms > 1.0 {
-                sleep(Duration::from_secs_f64(sleep_ms / 1000.0)).await;
+                // Use a blocking sleep, NOT tokio::time::sleep. This governor is invoked
+                // via futures::executor::block_on on a dedicated scan thread; tokio's
+                // async sleep never advances under the futures executor and busy-spins
+                // at 100% CPU. A blocking sleep is correct here.
+                std::thread::sleep(Duration::from_secs_f64(sleep_ms / 1000.0));
             }
-            
+
             // Reset accumulator
             self.accumulated_work_ms = 0.0;
         }

@@ -1,7 +1,7 @@
+use blake3::Hasher;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
-use blake3::Hasher;
 
 /// Deduplication engine using a 3-stage matching pipeline:
 /// 1. Exact Size
@@ -15,6 +15,7 @@ impl DedupPipeline {
     /// - First 8KB
     /// - Middle 8KB
     /// - Last 8KB
+    ///
     /// If the file size is less than 24KB, we hash the entire file.
     pub fn calculate_sparse_hash(path: &Path, file_size: u64) -> std::io::Result<blake3::Hash> {
         let mut file = File::open(path)?;
