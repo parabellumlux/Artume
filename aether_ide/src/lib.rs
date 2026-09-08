@@ -19,9 +19,8 @@ pub mod parser;
 pub mod project;
 pub mod sonifier;
 
-use anyhow::Result;
-use std::sync::Arc;
 use parking_lot::RwLock;
+use std::sync::Arc;
 
 /// The IDE state, shared between the IPC server and all subsystems.
 pub struct IdeState {
@@ -31,6 +30,12 @@ pub struct IdeState {
     pub cursor: Arc<RwLock<(usize, usize)>>,
     /// The parsed tree for the current file.
     pub tree: Arc<RwLock<Option<parser::CodeTree>>>,
+}
+
+impl Default for IdeState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl IdeState {

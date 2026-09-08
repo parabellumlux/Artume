@@ -240,8 +240,7 @@ impl CursorNavigation {
                     ScopeKind::Function | ScopeKind::AsyncFunction | ScopeKind::Method
                 )
             })
-            .filter(|b| b.start_line < current)
-            .last()
+            .rfind(|b| b.start_line < current)
             .ok_or_else(|| "No previous function found".to_string())?;
         self.cursor
             .move_to(self.cursor.file.clone(), prev.start_line, 0);

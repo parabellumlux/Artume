@@ -4,8 +4,8 @@
 //! Python `artome_ide` package. Uses serde_json for message serialization.
 
 use crate::buffer::TextBuffer;
-use crate::editor::VoiceEditor;
 use crate::dap::DapClient;
+use crate::editor::VoiceEditor;
 use crate::lsp::LspClient;
 use crate::navigation::{Cursor, CursorNavigation};
 use crate::parser;
@@ -15,11 +15,12 @@ use crate::IdeState;
 use anyhow::{Context, Result};
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
+use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
-use parking_lot::RwLock;
+use tokio::sync::RwLock;
 
 /// A JSON-RPC request from the Python UI.
 #[derive(Debug, Deserialize)]
@@ -57,6 +58,12 @@ pub struct IdeServerState {
     pub dap: RwLock<Option<DapClient>>,
 }
 
+impl Default for IdeServerState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl IdeServerState {
     pub fn new() -> Self {
         Self {
@@ -81,14 +88,48 @@ pub async fn start_ipc_server(state: Arc<IdeServerState>, socket_path: &str) -> 
         std::fs::create_dir_all(parent)?;
     }
 
-    let listener = UnixListener::bind(&path)
-        .with_context(|| format!("Failed to bind to {}", socket_path))?;
+    let listener =
+        UnixListener::bind(&path).with_context(|| format!("Failed to bind to {}", socket_path))?;
 
     info!("IDE IPC server listening on {}", socket_path);
 
     loop {
         match listener.accept().await {
             Ok((stream, _addr)) => {
+                // Auth: only allow connections from the same UID (owner of the socket).
+                // Fail closed: if we can't read peer credentials, reject the connection.
+                let self_uid = unsafe { libc::getuid() };
+                let peer_uid = unsafe {
+                    let fd = stream.as_raw_fd();
+                    let mut cred: libc::ucred = std::mem::zeroed();
+                    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+                    let ret = libc::getsockopt(
+                        fd,
+                        libc::SOL_SOCKET,
+                        libc::SO_PEERCRED,
+                        &mut cred as *mut _ as *mut libc::c_void,
+                        &mut len,
+                    );
+                    if ret == 0 {
+                        Some(cred.uid)
+                    } else {
+                        None
+                    }
+                };
+                match peer_uid {
+                    Some(uid) if uid == self_uid => {}
+                    Some(uid) => {
+                        warn!("IPC connection rejected: UID {uid} != owner UID {self_uid}");
+                        drop(stream);
+                        continue;
+                    }
+                    None => {
+                        warn!("IPC connection rejected: could not read peer credentials");
+                        drop(stream);
+                        continue;
+                    }
+                }
+
                 let state = state.clone();
                 if let Err(e) = handle_client(stream, state).await {
                     warn!("IPC client error: {e}");
@@ -158,6 +199,7 @@ async fn handle_request(request: &RpcRequest, state: &IdeServerState) -> RpcResp
         "get_context_lines" => handle_get_context_lines(request, state).await,
 
         // LSP operations
+        "lsp_init" => handle_lsp_init(request, state).await,
         "lsp_go_to_definition" => handle_lsp_go_to_definition(request, state).await,
         "lsp_hover" => handle_lsp_hover(request, state).await,
         "lsp_completions" => handle_lsp_completions(request, state).await,
@@ -199,6 +241,7 @@ async fn handle_request(request: &RpcRequest, state: &IdeServerState) -> RpcResp
         "editor_extract_function" => handle_editor_extract_function(request, state).await,
 
         // DAP operations
+        "dap_init" => handle_dap_init(request, state).await,
         "dap_start" => handle_dap_start(request, state).await,
         "dap_stop" => handle_dap_stop(request, state).await,
         "dap_set_breakpoint" => handle_dap_set_breakpoint(request, state).await,
@@ -238,8 +281,13 @@ async fn handle_request(request: &RpcRequest, state: &IdeServerState) -> RpcResp
 // File operations
 // =========================================================================
 
-async fn handle_open_file(request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
-    let path = request.params.get("path")
+async fn handle_open_file(
+    request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let path = request
+        .params
+        .get("path")
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("Missing 'path' parameter"))?;
 
@@ -252,14 +300,14 @@ async fn handle_open_file(request: &RpcRequest, state: &IdeServerState) -> Resul
 
     // Also load into buffer
     let buffer = TextBuffer::load(path)?;
-    *state.buffer.write() = Some(buffer.clone());
-    *state.editor.write() = Some(VoiceEditor::new(buffer));
+    *state.buffer.write().await = Some(buffer.clone());
+    *state.editor.write().await = Some(VoiceEditor::new(buffer));
 
     // Set up navigation
     let cursor = Cursor::new(path.to_string());
     let mut nav = CursorNavigation::new(cursor);
     nav.tree = Some(tree.clone());
-    *state.navigation.write() = Some(nav);
+    *state.navigation.write().await = Some(nav);
 
     Ok(serde_json::json!({
         "path": tree.path,
@@ -270,19 +318,28 @@ async fn handle_open_file(request: &RpcRequest, state: &IdeServerState) -> Resul
     }))
 }
 
-async fn handle_get_structure(_request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
+async fn handle_get_structure(
+    _request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
     let tree = state.ide.tree.read();
-    let tree = tree.as_ref().ok_or_else(|| anyhow::anyhow!("No file open"))?;
+    let tree = tree
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("No file open"))?;
 
-    let symbols: Vec<serde_json::Value> = tree.symbols.iter().map(|s| {
-        serde_json::json!({
-            "name": s.name,
-            "kind": format!("{:?}", s.kind).to_lowercase(),
-            "start_line": s.start_line + 1,
-            "end_line": s.end_line + 1,
-            "depth": s.depth,
+    let symbols: Vec<serde_json::Value> = tree
+        .symbols
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "name": s.name,
+                "kind": format!("{:?}", s.kind).to_lowercase(),
+                "start_line": s.start_line + 1,
+                "end_line": s.end_line + 1,
+                "depth": s.depth,
+            })
         })
-    }).collect();
+        .collect();
 
     Ok(serde_json::json!({
         "path": tree.path,
@@ -292,21 +349,29 @@ async fn handle_get_structure(_request: &RpcRequest, state: &IdeServerState) -> 
     }))
 }
 
-async fn handle_get_sonification(_request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
+async fn handle_get_sonification(
+    _request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
     let tree = state.ide.tree.read();
-    let tree = tree.as_ref().ok_or_else(|| anyhow::anyhow!("No file open"))?;
+    let tree = tree
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("No file open"))?;
 
     let audio = sonifier::sonify_tree(tree);
-    let lines: Vec<serde_json::Value> = audio.iter().map(|l| {
-        serde_json::json!({
-            "line": l.line + 1,
-            "drone_pitch": l.drone_pitch,
-            "drone_volume": l.drone_volume,
-            "earcon": l.earcon.as_ref().map(|e| format!("{:?}", e)),
-            "tempo": l.tempo,
-            "speak": l.speak,
+    let lines: Vec<serde_json::Value> = audio
+        .iter()
+        .map(|l| {
+            serde_json::json!({
+                "line": l.line + 1,
+                "drone_pitch": l.drone_pitch,
+                "drone_volume": l.drone_volume,
+                "earcon": l.earcon.as_ref().map(|e| format!("{:?}", e)),
+                "tempo": l.tempo,
+                "speak": l.speak,
+            })
         })
-    }).collect();
+        .collect();
 
     Ok(serde_json::json!({
         "path": tree.path,
@@ -315,9 +380,14 @@ async fn handle_get_sonification(_request: &RpcRequest, state: &IdeServerState) 
     }))
 }
 
-async fn handle_get_summary(_request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
+async fn handle_get_summary(
+    _request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
     let tree = state.ide.tree.read();
-    let tree = tree.as_ref().ok_or_else(|| anyhow::anyhow!("No file open"))?;
+    let tree = tree
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("No file open"))?;
 
     let summary = sonifier::structure_summary(tree);
     let tree_summary = sonifier::tree_summary(tree);
@@ -328,14 +398,22 @@ async fn handle_get_summary(_request: &RpcRequest, state: &IdeServerState) -> Re
     }))
 }
 
-async fn handle_get_tree(_request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
+async fn handle_get_tree(
+    _request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
     let tree = state.ide.tree.read();
-    let tree = tree.as_ref().ok_or_else(|| anyhow::anyhow!("No file open"))?;
+    let tree = tree
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("No file open"))?;
     let tree_text = sonifier::tree_summary(tree);
     Ok(serde_json::json!({ "tree": tree_text }))
 }
 
-async fn handle_get_cursor(_request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
+async fn handle_get_cursor(
+    _request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
     let cursor = *state.ide.cursor.read();
     Ok(serde_json::json!({
         "line": cursor.0 + 1,
@@ -343,13 +421,20 @@ async fn handle_get_cursor(_request: &RpcRequest, state: &IdeServerState) -> Res
     }))
 }
 
-async fn handle_set_cursor(request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
-    let line = request.params.get("line")
+async fn handle_set_cursor(
+    request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let line = request
+        .params
+        .get("line")
         .and_then(|v| v.as_u64())
         .map(|l| l.saturating_sub(1) as usize)
         .ok_or_else(|| anyhow::anyhow!("Missing or invalid 'line' parameter"))?;
 
-    let column = request.params.get("column")
+    let column = request
+        .params
+        .get("column")
         .and_then(|v| v.as_u64())
         .map(|c| c as usize)
         .unwrap_or(0);
@@ -357,7 +442,7 @@ async fn handle_set_cursor(request: &RpcRequest, state: &IdeServerState) -> Resu
     *state.ide.cursor.write() = (line, column);
 
     // Update navigation cursor
-    if let Some(ref mut nav) = *state.navigation.write() {
+    if let Some(ref mut nav) = *state.navigation.write().await {
         nav.cursor.line = line;
         nav.cursor.column = column;
     }
@@ -365,120 +450,256 @@ async fn handle_set_cursor(request: &RpcRequest, state: &IdeServerState) -> Resu
     Ok(serde_json::json!({ "ok": true }))
 }
 
-async fn handle_where_am_i(_request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
-    let nav = state.navigation.read();
-    let nav = nav.as_ref().ok_or_else(|| anyhow::anyhow!("No file open"))?;
+async fn handle_where_am_i(
+    _request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let nav = state.navigation.read().await;
+    let nav = nav
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("No file open"))?;
     Ok(serde_json::json!({ "description": nav.where_am_i() }))
 }
 
-async fn handle_get_context_lines(request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
-    let n = request.params.get("count").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
-    let nav = state.navigation.read();
-    let nav = nav.as_ref().ok_or_else(|| anyhow::anyhow!("No file open"))?;
+async fn handle_get_context_lines(
+    request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let n = request
+        .params
+        .get("count")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(5) as usize;
+    let nav = state.navigation.read().await;
+    let nav = nav
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("No file open"))?;
     let context = nav.get_context_lines(n);
     // Convert to serializable format (SpatialPosition doesn't impl Serialize)
-    let lines: Vec<serde_json::Value> = context.into_iter().map(|(line, text, pos)| {
-        serde_json::json!({
-            "line": line + 1,
-            "text": text,
-            "position": format!("{:?}", pos),
+    let lines: Vec<serde_json::Value> = context
+        .into_iter()
+        .map(|(line, text, pos)| {
+            serde_json::json!({
+                "line": line + 1,
+                "text": text,
+                "position": format!("{:?}", pos),
+            })
         })
-    }).collect();
+        .collect();
     Ok(serde_json::json!({ "lines": lines }))
 }
 
 // =========================================================================
-// LSP operations
+// LSP initialization
 // =========================================================================
 
-async fn handle_lsp_go_to_definition(request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
-    let file = request.params.get("file").and_then(|v| v.as_str())
+async fn handle_lsp_init(
+    request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let command: Vec<String> = request
+        .params
+        .get("command")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .ok_or_else(|| anyhow::anyhow!("Missing 'command' parameter (array of strings)"))?;
+    if command.is_empty() {
+        return Err(anyhow::anyhow!("'command' array must not be empty"));
+    }
+
+    let client = crate::lsp::LspClient::spawn(&command).await?;
+    *state.lsp.write().await = Some(client);
+    info!("LSP server initialized: {:?}", command);
+
+    Ok(serde_json::json!({ "ok": true, "message": format!("LSP server started: {}", command[0]) }))
+}
+
+async fn handle_lsp_go_to_definition(
+    request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let file = request
+        .params
+        .get("file")
+        .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("Missing 'file' parameter"))?;
-    let line = request.params.get("line").and_then(|v| v.as_u64())
+    let line = request
+        .params
+        .get("line")
+        .and_then(|v| v.as_u64())
         .ok_or_else(|| anyhow::anyhow!("Missing 'line' parameter"))? as usize;
-    let column = request.params.get("column").and_then(|v| v.as_u64())
+    let column = request
+        .params
+        .get("column")
+        .and_then(|v| v.as_u64())
         .ok_or_else(|| anyhow::anyhow!("Missing 'column' parameter"))? as usize;
-    let mut lsp = state.lsp.write();
-    let lsp = lsp.as_mut().ok_or_else(|| anyhow::anyhow!("LSP not initialized"))?;
+    let mut lsp = state.lsp.write().await;
+    let lsp = lsp
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("LSP not initialized"))?;
     let result = lsp.go_to_definition(file, line, column).await?;
     Ok(serde_json::json!({ "location": result }))
 }
 
-async fn handle_lsp_hover(request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
-    let file = request.params.get("file").and_then(|v| v.as_str())
+async fn handle_lsp_hover(
+    request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let file = request
+        .params
+        .get("file")
+        .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("Missing 'file' parameter"))?;
-    let line = request.params.get("line").and_then(|v| v.as_u64())
+    let line = request
+        .params
+        .get("line")
+        .and_then(|v| v.as_u64())
         .ok_or_else(|| anyhow::anyhow!("Missing 'line' parameter"))? as usize;
-    let column = request.params.get("column").and_then(|v| v.as_u64())
+    let column = request
+        .params
+        .get("column")
+        .and_then(|v| v.as_u64())
         .ok_or_else(|| anyhow::anyhow!("Missing 'column' parameter"))? as usize;
-    let mut lsp = state.lsp.write();
-    let lsp = lsp.as_mut().ok_or_else(|| anyhow::anyhow!("LSP not initialized"))?;
+    let mut lsp = state.lsp.write().await;
+    let lsp = lsp
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("LSP not initialized"))?;
     let (type_info, docstring) = lsp.hover(file, line, column).await?;
     Ok(serde_json::json!({ "type_info": type_info, "docstring": docstring }))
 }
 
-async fn handle_lsp_completions(request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
-    let file = request.params.get("file").and_then(|v| v.as_str())
+async fn handle_lsp_completions(
+    request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let file = request
+        .params
+        .get("file")
+        .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("Missing 'file' parameter"))?;
-    let line = request.params.get("line").and_then(|v| v.as_u64())
+    let line = request
+        .params
+        .get("line")
+        .and_then(|v| v.as_u64())
         .ok_or_else(|| anyhow::anyhow!("Missing 'line' parameter"))? as usize;
-    let column = request.params.get("column").and_then(|v| v.as_u64())
+    let column = request
+        .params
+        .get("column")
+        .and_then(|v| v.as_u64())
         .ok_or_else(|| anyhow::anyhow!("Missing 'column' parameter"))? as usize;
-    let mut lsp = state.lsp.write();
-    let lsp = lsp.as_mut().ok_or_else(|| anyhow::anyhow!("LSP not initialized"))?;
+    let mut lsp = state.lsp.write().await;
+    let lsp = lsp
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("LSP not initialized"))?;
     let items = lsp.completions(file, line, column).await?;
     Ok(serde_json::json!({ "completions": items }))
 }
 
-async fn handle_lsp_diagnostics(_request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
-    let lsp = state.lsp.read();
-    let lsp = lsp.as_ref().ok_or_else(|| anyhow::anyhow!("LSP not initialized"))?;
+async fn handle_lsp_diagnostics(
+    _request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let lsp = state.lsp.read().await;
+    let lsp = lsp
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("LSP not initialized"))?;
     let diags = lsp.all_diagnostics().await;
     Ok(serde_json::json!({ "diagnostics": diags }))
 }
 
-async fn handle_lsp_document_symbols(request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
-    let file = request.params.get("file").and_then(|v| v.as_str())
+async fn handle_lsp_document_symbols(
+    request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let file = request
+        .params
+        .get("file")
+        .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("Missing 'file' parameter"))?;
-    let mut lsp = state.lsp.write();
-    let lsp = lsp.as_mut().ok_or_else(|| anyhow::anyhow!("LSP not initialized"))?;
+    let mut lsp = state.lsp.write().await;
+    let lsp = lsp
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("LSP not initialized"))?;
     let symbols = lsp.document_symbols(file).await?;
     Ok(serde_json::json!({ "symbols": symbols }))
 }
 
-async fn handle_lsp_references(request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
-    let file = request.params.get("file").and_then(|v| v.as_str())
+async fn handle_lsp_references(
+    request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let file = request
+        .params
+        .get("file")
+        .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("Missing 'file' parameter"))?;
-    let line = request.params.get("line").and_then(|v| v.as_u64())
+    let line = request
+        .params
+        .get("line")
+        .and_then(|v| v.as_u64())
         .ok_or_else(|| anyhow::anyhow!("Missing 'line' parameter"))? as usize;
-    let column = request.params.get("column").and_then(|v| v.as_u64())
+    let column = request
+        .params
+        .get("column")
+        .and_then(|v| v.as_u64())
         .ok_or_else(|| anyhow::anyhow!("Missing 'column' parameter"))? as usize;
-    let mut lsp = state.lsp.write();
-    let lsp = lsp.as_mut().ok_or_else(|| anyhow::anyhow!("LSP not initialized"))?;
+    let mut lsp = state.lsp.write().await;
+    let lsp = lsp
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("LSP not initialized"))?;
     let locations = lsp.references(file, line, column).await?;
     Ok(serde_json::json!({ "references": locations }))
 }
 
-async fn handle_lsp_rename(request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
-    let file = request.params.get("file").and_then(|v| v.as_str())
+async fn handle_lsp_rename(
+    request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let file = request
+        .params
+        .get("file")
+        .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("Missing 'file' parameter"))?;
-    let line = request.params.get("line").and_then(|v| v.as_u64())
+    let line = request
+        .params
+        .get("line")
+        .and_then(|v| v.as_u64())
         .ok_or_else(|| anyhow::anyhow!("Missing 'line' parameter"))? as usize;
-    let column = request.params.get("column").and_then(|v| v.as_u64())
+    let column = request
+        .params
+        .get("column")
+        .and_then(|v| v.as_u64())
         .ok_or_else(|| anyhow::anyhow!("Missing 'column' parameter"))? as usize;
-    let new_name = request.params.get("new_name").and_then(|v| v.as_str())
+    let new_name = request
+        .params
+        .get("new_name")
+        .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("Missing 'new_name' parameter"))?;
-    let mut lsp = state.lsp.write();
-    let lsp = lsp.as_mut().ok_or_else(|| anyhow::anyhow!("LSP not initialized"))?;
+    let mut lsp = state.lsp.write().await;
+    let lsp = lsp
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("LSP not initialized"))?;
     let edit = lsp.rename(file, line, column, new_name).await?;
     Ok(serde_json::json!({ "workspace_edit": edit }))
 }
 
-async fn handle_lsp_format(request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
-    let file = request.params.get("file").and_then(|v| v.as_str())
+async fn handle_lsp_format(
+    request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let file = request
+        .params
+        .get("file")
+        .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("Missing 'file' parameter"))?;
-    let mut lsp = state.lsp.write();
-    let lsp = lsp.as_mut().ok_or_else(|| anyhow::anyhow!("LSP not initialized"))?;
+    let mut lsp = state.lsp.write().await;
+    let lsp = lsp
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("LSP not initialized"))?;
     let edits = lsp.formatting(file).await?;
     Ok(serde_json::json!({ "edits": edits }))
 }
@@ -487,54 +708,89 @@ async fn handle_lsp_format(request: &RpcRequest, state: &IdeServerState) -> Resu
 // Project operations
 // =========================================================================
 
-async fn handle_project_scan(request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
-    let root = request.params.get("root").and_then(|v| v.as_str())
+async fn handle_project_scan(
+    request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let root = request
+        .params
+        .get("root")
+        .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("Missing 'root' parameter"))?;
-    let mut config = ProjectConfig::default();
-    config.root_dir = PathBuf::from(root);
+    let config = ProjectConfig {
+        root_dir: PathBuf::from(root),
+        ..Default::default()
+    };
     let project = ProjectIndex::scan(&config)?;
     let count = project.files.len();
-    *state.project.write() = Some(project);
+    *state.project.write().await = Some(project);
     Ok(serde_json::json!({ "files_indexed": count }))
 }
 
-async fn handle_project_find_file(request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
-    let project = state.project.read();
-    let project = project.as_ref().ok_or_else(|| anyhow::anyhow!("No project scanned"))?;
-    let name = request.params.get("name").and_then(|v| v.as_str())
+async fn handle_project_find_file(
+    request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let project = state.project.read().await;
+    let project = project
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("No project scanned"))?;
+    let name = request
+        .params
+        .get("name")
+        .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("Missing 'name' parameter"))?;
     let results = project.fuzzy_find_file(name);
-    let files: Vec<serde_json::Value> = results.iter().map(|f| {
-        serde_json::json!({
-            "path": f.path.to_string_lossy(),
-            "language": f.language,
-            "line_count": f.line_count,
+    let files: Vec<serde_json::Value> = results
+        .iter()
+        .map(|f| {
+            serde_json::json!({
+                "path": f.path.to_string_lossy(),
+                "language": f.language,
+                "line_count": f.line_count,
+            })
         })
-    }).collect();
+        .collect();
     Ok(serde_json::json!({ "files": files }))
 }
 
-async fn handle_project_find_symbol(request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
-    let project = state.project.read();
-    let project = project.as_ref().ok_or_else(|| anyhow::anyhow!("No project scanned"))?;
-    let name = request.params.get("name").and_then(|v| v.as_str())
+async fn handle_project_find_symbol(
+    request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let project = state.project.read().await;
+    let project = project
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("No project scanned"))?;
+    let name = request
+        .params
+        .get("name")
+        .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("Missing 'name' parameter"))?;
     let results = project.find_symbol(name);
-    let symbols: Vec<serde_json::Value> = results.iter().map(|s| {
-        serde_json::json!({
-            "name": s.name,
-            "kind": format!("{:?}", s.kind),
-            "file": s.file_path.to_string_lossy(),
-            "start_line": s.start_line + 1,
-            "end_line": s.end_line + 1,
+    let symbols: Vec<serde_json::Value> = results
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "name": s.name,
+                "kind": format!("{:?}", s.kind),
+                "file": s.file_path.to_string_lossy(),
+                "start_line": s.start_line + 1,
+                "end_line": s.end_line + 1,
+            })
         })
-    }).collect();
+        .collect();
     Ok(serde_json::json!({ "symbols": symbols }))
 }
 
-async fn handle_project_file_tree(_request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
-    let project = state.project.read();
-    let project = project.as_ref().ok_or_else(|| anyhow::anyhow!("No project scanned"))?;
+async fn handle_project_file_tree(
+    _request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let project = state.project.read().await;
+    let project = project
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("No project scanned"))?;
     let tree = project.get_file_tree();
     Ok(serde_json::json!({ "tree": tree }))
 }
@@ -543,73 +799,138 @@ async fn handle_project_file_tree(_request: &RpcRequest, state: &IdeServerState)
 // Navigation operations
 // =========================================================================
 
-async fn handle_nav_go_to_line(request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
-    let line = request.params.get("line").and_then(|v| v.as_u64())
+async fn handle_nav_go_to_line(
+    request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let line = request
+        .params
+        .get("line")
+        .and_then(|v| v.as_u64())
         .ok_or_else(|| anyhow::anyhow!("Missing 'line' parameter"))? as usize;
-    let mut nav = state.navigation.write();
-    let nav = nav.as_mut().ok_or_else(|| anyhow::anyhow!("No file open"))?;
-    nav.move_to_line(line.saturating_sub(1)).map_err(|e| anyhow::anyhow!("{}", e))?;
+    let mut nav = state.navigation.write().await;
+    let nav = nav
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("No file open"))?;
+    nav.move_to_line(line.saturating_sub(1))
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
     *state.ide.cursor.write() = (line.saturating_sub(1), 0);
     Ok(serde_json::json!({ "ok": true, "line": line }))
 }
 
-async fn handle_nav_go_to_function(request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
-    let name = request.params.get("name").and_then(|v| v.as_str())
+async fn handle_nav_go_to_function(
+    request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let name = request
+        .params
+        .get("name")
+        .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("Missing 'name' parameter"))?;
-    let mut nav = state.navigation.write();
-    let nav = nav.as_mut().ok_or_else(|| anyhow::anyhow!("No file open"))?;
-    let line = nav.move_to_function(name).map_err(|e| anyhow::anyhow!("{}", e))?;
+    let mut nav = state.navigation.write().await;
+    let nav = nav
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("No file open"))?;
+    let line = nav
+        .move_to_function(name)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
     *state.ide.cursor.write() = (line, 0);
     Ok(serde_json::json!({ "ok": true, "line": line + 1 }))
 }
 
-async fn handle_nav_go_to_class(request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
-    let name = request.params.get("name").and_then(|v| v.as_str())
+async fn handle_nav_go_to_class(
+    request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let name = request
+        .params
+        .get("name")
+        .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("Missing 'name' parameter"))?;
-    let mut nav = state.navigation.write();
-    let nav = nav.as_mut().ok_or_else(|| anyhow::anyhow!("No file open"))?;
-    let line = nav.move_to_class(name).map_err(|e| anyhow::anyhow!("{}", e))?;
+    let mut nav = state.navigation.write().await;
+    let nav = nav
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("No file open"))?;
+    let line = nav
+        .move_to_class(name)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
     *state.ide.cursor.write() = (line, 0);
     Ok(serde_json::json!({ "ok": true, "line": line + 1 }))
 }
 
-async fn handle_nav_go_to_symbol(request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
-    let name = request.params.get("name").and_then(|v| v.as_str())
+async fn handle_nav_go_to_symbol(
+    request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let name = request
+        .params
+        .get("name")
+        .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("Missing 'name' parameter"))?;
-    let mut nav = state.navigation.write();
-    let nav = nav.as_mut().ok_or_else(|| anyhow::anyhow!("No file open"))?;
-    let line = nav.move_to_symbol(name).map_err(|e| anyhow::anyhow!("{}", e))?;
+    let mut nav = state.navigation.write().await;
+    let nav = nav
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("No file open"))?;
+    let line = nav
+        .move_to_symbol(name)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
     *state.ide.cursor.write() = (line, 0);
     Ok(serde_json::json!({ "ok": true, "line": line + 1 }))
 }
 
-async fn handle_nav_next_function(_request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
-    let mut nav = state.navigation.write();
-    let nav = nav.as_mut().ok_or_else(|| anyhow::anyhow!("No file open"))?;
-    let line = nav.move_next_function().map_err(|e| anyhow::anyhow!("{}", e))?;
+async fn handle_nav_next_function(
+    _request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let mut nav = state.navigation.write().await;
+    let nav = nav
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("No file open"))?;
+    let line = nav
+        .move_next_function()
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
     *state.ide.cursor.write() = (line, 0);
     Ok(serde_json::json!({ "ok": true, "line": line + 1 }))
 }
 
-async fn handle_nav_prev_function(_request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
-    let mut nav = state.navigation.write();
-    let nav = nav.as_mut().ok_or_else(|| anyhow::anyhow!("No file open"))?;
-    let line = nav.move_prev_function().map_err(|e| anyhow::anyhow!("{}", e))?;
+async fn handle_nav_prev_function(
+    _request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let mut nav = state.navigation.write().await;
+    let nav = nav
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("No file open"))?;
+    let line = nav
+        .move_prev_function()
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
     *state.ide.cursor.write() = (line, 0);
     Ok(serde_json::json!({ "ok": true, "line": line + 1 }))
 }
 
-async fn handle_nav_next_problem(_request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
-    let mut nav = state.navigation.write();
-    let nav = nav.as_mut().ok_or_else(|| anyhow::anyhow!("No file open"))?;
-    let line = nav.move_next_problem().map_err(|e| anyhow::anyhow!("{}", e))?;
+async fn handle_nav_next_problem(
+    _request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let mut nav = state.navigation.write().await;
+    let nav = nav
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("No file open"))?;
+    let line = nav
+        .move_next_problem()
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
     *state.ide.cursor.write() = (line, 0);
     Ok(serde_json::json!({ "ok": true, "line": line + 1 }))
 }
 
-async fn handle_nav_go_back(_request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
-    let mut nav = state.navigation.write();
-    let nav = nav.as_mut().ok_or_else(|| anyhow::anyhow!("No file open"))?;
+async fn handle_nav_go_back(
+    _request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let mut nav = state.navigation.write().await;
+    let nav = nav
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("No file open"))?;
     if nav.go_back() {
         let line = nav.cursor.line;
         let col = nav.cursor.column;
@@ -624,62 +945,125 @@ async fn handle_nav_go_back(_request: &RpcRequest, state: &IdeServerState) -> Re
 // Buffer/Editor operations
 // =========================================================================
 
-async fn handle_buffer_load(request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
-    let path = request.params.get("path").and_then(|v| v.as_str())
+async fn handle_buffer_load(
+    request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let path = request
+        .params
+        .get("path")
+        .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("Missing 'path' parameter"))?;
     let buffer = TextBuffer::load(path)?;
-    let info = format!("Loaded {}: {} lines, {} chars", path, buffer.line_count(), buffer.total_chars());
-    *state.buffer.write() = Some(buffer.clone());
-    *state.editor.write() = Some(VoiceEditor::new(buffer));
+    let info = format!(
+        "Loaded {}: {} lines, {} chars",
+        path,
+        buffer.line_count(),
+        buffer.total_chars()
+    );
+    *state.buffer.write().await = Some(buffer.clone());
+    *state.editor.write().await = Some(VoiceEditor::new(buffer));
     Ok(serde_json::json!({ "ok": true, "info": info }))
 }
 
-async fn handle_buffer_save(_request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
-    let buffer = state.buffer.read();
-    let buffer = buffer.as_ref().ok_or_else(|| anyhow::anyhow!("No buffer"))?;
+async fn handle_buffer_save(
+    _request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let buffer = state.buffer.read().await;
+    let buffer = buffer
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("No buffer"))?;
     buffer.save()?;
     Ok(serde_json::json!({ "ok": true }))
 }
 
-async fn handle_buffer_get_line(request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
-    let line = request.params.get("line").and_then(|v| v.as_u64())
+async fn handle_buffer_get_line(
+    request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let line = request
+        .params
+        .get("line")
+        .and_then(|v| v.as_u64())
         .ok_or_else(|| anyhow::anyhow!("Missing 'line' parameter"))? as usize;
-    let buffer = state.buffer.read();
-    let buffer = buffer.as_ref().ok_or_else(|| anyhow::anyhow!("No buffer"))?;
+    let buffer = state.buffer.read().await;
+    let buffer = buffer
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("No buffer"))?;
     let text = buffer.get_line(line).unwrap_or("").to_string();
     Ok(serde_json::json!({ "text": text }))
 }
 
-async fn handle_buffer_get_lines(request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
-    let start = request.params.get("start").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-    let end = request.params.get("end").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
-    let buffer = state.buffer.read();
-    let buffer = buffer.as_ref().ok_or_else(|| anyhow::anyhow!("No buffer"))?;
+async fn handle_buffer_get_lines(
+    request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let start = request
+        .params
+        .get("start")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as usize;
+    let end = request
+        .params
+        .get("end")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(10) as usize;
+    let buffer = state.buffer.read().await;
+    let buffer = buffer
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("No buffer"))?;
     let text = buffer.get_lines(start, end);
     Ok(serde_json::json!({ "text": text }))
 }
 
-async fn handle_buffer_undo(_request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
-    let mut editor = state.editor.write();
-    let editor = editor.as_mut().ok_or_else(|| anyhow::anyhow!("No editor"))?;
+async fn handle_buffer_undo(
+    _request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let mut editor = state.editor.write().await;
+    let editor = editor
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("No editor"))?;
     editor.undo();
     Ok(serde_json::json!({ "ok": true }))
 }
 
-async fn handle_buffer_redo(_request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
-    let mut editor = state.editor.write();
-    let editor = editor.as_mut().ok_or_else(|| anyhow::anyhow!("No editor"))?;
+async fn handle_buffer_redo(
+    _request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let mut editor = state.editor.write().await;
+    let editor = editor
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("No editor"))?;
     editor.redo();
     Ok(serde_json::json!({ "ok": true }))
 }
 
-async fn handle_editor_insert_line(request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
-    let line = request.params.get("line").and_then(|v| v.as_u64())
+async fn handle_editor_insert_line(
+    request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let line = request
+        .params
+        .get("line")
+        .and_then(|v| v.as_u64())
         .ok_or_else(|| anyhow::anyhow!("Missing 'line' parameter"))? as usize;
-    let text = request.params.get("text").and_then(|v| v.as_str()).unwrap_or("");
-    let after = request.params.get("after").and_then(|v| v.as_bool()).unwrap_or(false);
-    let mut editor = state.editor.write();
-    let editor = editor.as_mut().ok_or_else(|| anyhow::anyhow!("No editor"))?;
+    let text = request
+        .params
+        .get("text")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let after = request
+        .params
+        .get("after")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let mut editor = state.editor.write().await;
+    let editor = editor
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("No editor"))?;
     if after {
         editor.insert_line_after(line, text);
     } else {
@@ -688,45 +1072,90 @@ async fn handle_editor_insert_line(request: &RpcRequest, state: &IdeServerState)
     Ok(serde_json::json!({ "ok": true }))
 }
 
-async fn handle_editor_delete_line(request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
-    let line = request.params.get("line").and_then(|v| v.as_u64())
+async fn handle_editor_delete_line(
+    request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let line = request
+        .params
+        .get("line")
+        .and_then(|v| v.as_u64())
         .ok_or_else(|| anyhow::anyhow!("Missing 'line' parameter"))? as usize;
-    let mut editor = state.editor.write();
-    let editor = editor.as_mut().ok_or_else(|| anyhow::anyhow!("No editor"))?;
+    let mut editor = state.editor.write().await;
+    let editor = editor
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("No editor"))?;
     editor.delete_line(line);
     Ok(serde_json::json!({ "ok": true }))
 }
 
-async fn handle_editor_change_text(request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
-    let old = request.params.get("old").and_then(|v| v.as_str())
+async fn handle_editor_change_text(
+    request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let old = request
+        .params
+        .get("old")
+        .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("Missing 'old' parameter"))?;
-    let new = request.params.get("new").and_then(|v| v.as_str())
+    let new = request
+        .params
+        .get("new")
+        .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("Missing 'new' parameter"))?;
-    let mut editor = state.editor.write();
-    let editor = editor.as_mut().ok_or_else(|| anyhow::anyhow!("No editor"))?;
+    let mut editor = state.editor.write().await;
+    let editor = editor
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("No editor"))?;
     let count = editor.change_text(old, new);
     Ok(serde_json::json!({ "ok": true, "replacements": count }))
 }
 
-async fn handle_editor_comment_lines(request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
-    let start = request.params.get("start").and_then(|v| v.as_u64())
+async fn handle_editor_comment_lines(
+    request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let start = request
+        .params
+        .get("start")
+        .and_then(|v| v.as_u64())
         .ok_or_else(|| anyhow::anyhow!("Missing 'start' parameter"))? as usize;
-    let end = request.params.get("end").and_then(|v| v.as_u64())
+    let end = request
+        .params
+        .get("end")
+        .and_then(|v| v.as_u64())
         .ok_or_else(|| anyhow::anyhow!("Missing 'end' parameter"))? as usize;
-    let mut editor = state.editor.write();
-    let editor = editor.as_mut().ok_or_else(|| anyhow::anyhow!("No editor"))?;
+    let mut editor = state.editor.write().await;
+    let editor = editor
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("No editor"))?;
     editor.comment_lines(start, end);
     Ok(serde_json::json!({ "ok": true }))
 }
 
-async fn handle_editor_indent_lines(request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
-    let start = request.params.get("start").and_then(|v| v.as_u64())
+async fn handle_editor_indent_lines(
+    request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let start = request
+        .params
+        .get("start")
+        .and_then(|v| v.as_u64())
         .ok_or_else(|| anyhow::anyhow!("Missing 'start' parameter"))? as usize;
-    let end = request.params.get("end").and_then(|v| v.as_u64())
+    let end = request
+        .params
+        .get("end")
+        .and_then(|v| v.as_u64())
         .ok_or_else(|| anyhow::anyhow!("Missing 'end' parameter"))? as usize;
-    let outdent = request.params.get("outdent").and_then(|v| v.as_bool()).unwrap_or(false);
-    let mut editor = state.editor.write();
-    let editor = editor.as_mut().ok_or_else(|| anyhow::anyhow!("No editor"))?;
+    let outdent = request
+        .params
+        .get("outdent")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let mut editor = state.editor.write().await;
+    let editor = editor
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("No editor"))?;
     if outdent {
         editor.outdent_lines(start, end);
     } else {
@@ -735,136 +1164,276 @@ async fn handle_editor_indent_lines(request: &RpcRequest, state: &IdeServerState
     Ok(serde_json::json!({ "ok": true }))
 }
 
-async fn handle_editor_wrap_try_catch(request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
-    let start = request.params.get("start").and_then(|v| v.as_u64())
+async fn handle_editor_wrap_try_catch(
+    request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let start = request
+        .params
+        .get("start")
+        .and_then(|v| v.as_u64())
         .ok_or_else(|| anyhow::anyhow!("Missing 'start' parameter"))? as usize;
-    let end = request.params.get("end").and_then(|v| v.as_u64())
+    let end = request
+        .params
+        .get("end")
+        .and_then(|v| v.as_u64())
         .ok_or_else(|| anyhow::anyhow!("Missing 'end' parameter"))? as usize;
-    let mut editor = state.editor.write();
-    let editor = editor.as_mut().ok_or_else(|| anyhow::anyhow!("No editor"))?;
+    let mut editor = state.editor.write().await;
+    let editor = editor
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("No editor"))?;
     editor.wrap_in_try_catch(start, end);
     Ok(serde_json::json!({ "ok": true }))
 }
 
-async fn handle_editor_extract_function(request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
-    let start = request.params.get("start").and_then(|v| v.as_u64())
+async fn handle_editor_extract_function(
+    request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let start = request
+        .params
+        .get("start")
+        .and_then(|v| v.as_u64())
         .ok_or_else(|| anyhow::anyhow!("Missing 'start' parameter"))? as usize;
-    let end = request.params.get("end").and_then(|v| v.as_u64())
+    let end = request
+        .params
+        .get("end")
+        .and_then(|v| v.as_u64())
         .ok_or_else(|| anyhow::anyhow!("Missing 'end' parameter"))? as usize;
-    let name = request.params.get("name").and_then(|v| v.as_str())
+    let name = request
+        .params
+        .get("name")
+        .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("Missing 'name' parameter"))?;
-    let mut editor = state.editor.write();
-    let editor = editor.as_mut().ok_or_else(|| anyhow::anyhow!("No editor"))?;
+    let mut editor = state.editor.write().await;
+    let editor = editor
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("No editor"))?;
     editor.extract_function(start, end, name);
     Ok(serde_json::json!({ "ok": true }))
 }
 
 // =========================================================================
-// DAP operations
+// DAP initialization
 // =========================================================================
 
-async fn handle_dap_start(request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
-    let program = request.params.get("program").and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("Missing 'program' parameter"))?;
-    let args: Vec<String> = request.params.get("args")
+async fn handle_dap_init(
+    request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let command: Vec<String> = request
+        .params
+        .get("command")
         .and_then(|v| v.as_array())
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .ok_or_else(|| anyhow::anyhow!("Missing 'command' parameter (array of strings)"))?;
+    if command.is_empty() {
+        return Err(anyhow::anyhow!("'command' array must not be empty"));
+    }
+
+    let client = crate::dap::DapClient::spawn(&command).await?;
+    *state.dap.write().await = Some(client);
+    info!("DAP adapter initialized: {:?}", command);
+
+    Ok(serde_json::json!({ "ok": true, "message": format!("DAP adapter started: {}", command[0]) }))
+}
+
+async fn handle_dap_start(
+    request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let program = request
+        .params
+        .get("program")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("Missing 'program' parameter"))?;
+    let args: Vec<String> = request
+        .params
+        .get("args")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
         .unwrap_or_default();
-    let mut dap = state.dap.write();
-    let dap = dap.as_mut().ok_or_else(|| anyhow::anyhow!("DAP not initialized"))?;
+    let mut dap = state.dap.write().await;
+    let dap = dap
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("DAP not initialized"))?;
     let result = dap.launch(program, &args, None).await?;
     Ok(serde_json::json!({ "ok": true, "result": result }))
 }
 
-async fn handle_dap_stop(_request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
-    let mut dap = state.dap.write();
-    let dap = dap.as_mut().ok_or_else(|| anyhow::anyhow!("DAP not initialized"))?;
+async fn handle_dap_stop(
+    _request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let mut dap = state.dap.write().await;
+    let dap = dap
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("DAP not initialized"))?;
     dap.terminate().await?;
     Ok(serde_json::json!({ "ok": true, "message": "Debug session stopped" }))
 }
 
-async fn handle_dap_set_breakpoint(request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
-    let file = request.params.get("file").and_then(|v| v.as_str())
+async fn handle_dap_set_breakpoint(
+    request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let file = request
+        .params
+        .get("file")
+        .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("Missing 'file' parameter"))?;
-    let line = request.params.get("line").and_then(|v| v.as_u64())
+    let line = request
+        .params
+        .get("line")
+        .and_then(|v| v.as_u64())
         .ok_or_else(|| anyhow::anyhow!("Missing 'line' parameter"))?;
     let condition = request.params.get("condition").and_then(|v| v.as_str());
-    let mut dap = state.dap.write();
-    let dap = dap.as_mut().ok_or_else(|| anyhow::anyhow!("DAP not initialized"))?;
+    let mut dap = state.dap.write().await;
+    let dap = dap
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("DAP not initialized"))?;
     let bp = dap.set_breakpoint(file, line, condition).await?;
     Ok(serde_json::json!({ "ok": true, "breakpoint": bp }))
 }
 
-async fn handle_dap_clear_breakpoint(request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
-    let file = request.params.get("file").and_then(|v| v.as_str())
+async fn handle_dap_clear_breakpoint(
+    request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let file = request
+        .params
+        .get("file")
+        .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("Missing 'file' parameter"))?;
-    let line = request.params.get("line").and_then(|v| v.as_u64())
+    let line = request
+        .params
+        .get("line")
+        .and_then(|v| v.as_u64())
         .ok_or_else(|| anyhow::anyhow!("Missing 'line' parameter"))?;
-    let mut dap = state.dap.write();
-    let dap = dap.as_mut().ok_or_else(|| anyhow::anyhow!("DAP not initialized"))?;
+    let mut dap = state.dap.write().await;
+    let dap = dap
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("DAP not initialized"))?;
     dap.clear_breakpoint(file, line).await?;
     Ok(serde_json::json!({ "ok": true, "cleared_line": line }))
 }
 
-async fn handle_dap_list_breakpoints(_request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
-    let dap = state.dap.read();
-    let dap = dap.as_ref().ok_or_else(|| anyhow::anyhow!("DAP not initialized"))?;
+async fn handle_dap_list_breakpoints(
+    _request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let dap = state.dap.read().await;
+    let dap = dap
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("DAP not initialized"))?;
     let bps = dap.list_breakpoints();
     Ok(serde_json::json!({ "breakpoints": bps }))
 }
 
-async fn handle_dap_continue(_request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
-    let mut dap = state.dap.write();
-    let dap = dap.as_mut().ok_or_else(|| anyhow::anyhow!("DAP not initialized"))?;
+async fn handle_dap_continue(
+    _request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let mut dap = state.dap.write().await;
+    let dap = dap
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("DAP not initialized"))?;
     let result = dap.continue_execution().await?;
     Ok(serde_json::json!({ "ok": true, "result": result }))
 }
 
-async fn handle_dap_next(_request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
-    let mut dap = state.dap.write();
-    let dap = dap.as_mut().ok_or_else(|| anyhow::anyhow!("DAP not initialized"))?;
+async fn handle_dap_next(
+    _request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let mut dap = state.dap.write().await;
+    let dap = dap
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("DAP not initialized"))?;
     let result = dap.next().await?;
     Ok(serde_json::json!({ "ok": true, "result": result }))
 }
 
-async fn handle_dap_step_in(_request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
-    let mut dap = state.dap.write();
-    let dap = dap.as_mut().ok_or_else(|| anyhow::anyhow!("DAP not initialized"))?;
+async fn handle_dap_step_in(
+    _request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let mut dap = state.dap.write().await;
+    let dap = dap
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("DAP not initialized"))?;
     let result = dap.step_in().await?;
     Ok(serde_json::json!({ "ok": true, "result": result }))
 }
 
-async fn handle_dap_step_out(_request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
-    let mut dap = state.dap.write();
-    let dap = dap.as_mut().ok_or_else(|| anyhow::anyhow!("DAP not initialized"))?;
+async fn handle_dap_step_out(
+    _request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let mut dap = state.dap.write().await;
+    let dap = dap
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("DAP not initialized"))?;
     let result = dap.step_out().await?;
     Ok(serde_json::json!({ "ok": true, "result": result }))
 }
 
-async fn handle_dap_stack_trace(request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
+async fn handle_dap_stack_trace(
+    request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
     let thread_id = request.params.get("thread_id").and_then(|v| v.as_u64());
-    let mut dap = state.dap.write();
-    let dap = dap.as_mut().ok_or_else(|| anyhow::anyhow!("DAP not initialized"))?;
+    let mut dap = state.dap.write().await;
+    let dap = dap
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("DAP not initialized"))?;
     let frames = dap.get_stack_trace(thread_id).await?;
     Ok(serde_json::json!({ "stack_frames": frames }))
 }
 
-async fn handle_dap_variables(request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
-    let frame_id = request.params.get("frame_id").and_then(|v| v.as_u64())
+async fn handle_dap_variables(
+    request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let frame_id = request
+        .params
+        .get("frame_id")
+        .and_then(|v| v.as_u64())
         .ok_or_else(|| anyhow::anyhow!("Missing 'frame_id' parameter"))?;
-    let mut dap = state.dap.write();
-    let dap = dap.as_mut().ok_or_else(|| anyhow::anyhow!("DAP not initialized"))?;
+    let mut dap = state.dap.write().await;
+    let dap = dap
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("DAP not initialized"))?;
     let vars = dap.get_variables(frame_id).await?;
     Ok(serde_json::json!({ "variables": vars }))
 }
 
-async fn handle_dap_evaluate(request: &RpcRequest, state: &IdeServerState) -> Result<serde_json::Value> {
-    let expression = request.params.get("expression").and_then(|v| v.as_str())
+async fn handle_dap_evaluate(
+    request: &RpcRequest,
+    state: &IdeServerState,
+) -> Result<serde_json::Value> {
+    let expression = request
+        .params
+        .get("expression")
+        .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("Missing 'expression' parameter"))?;
-    let frame_id = request.params.get("frame_id").and_then(|v| v.as_u64())
+    let frame_id = request
+        .params
+        .get("frame_id")
+        .and_then(|v| v.as_u64())
         .ok_or_else(|| anyhow::anyhow!("Missing 'frame_id' parameter"))?;
-    let mut dap = state.dap.write();
-    let dap = dap.as_mut().ok_or_else(|| anyhow::anyhow!("DAP not initialized"))?;
+    let mut dap = state.dap.write().await;
+    let dap = dap
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("DAP not initialized"))?;
     let var = dap.evaluate(expression, frame_id).await?;
     Ok(serde_json::json!({ "result": var }))
 }
@@ -884,6 +1453,7 @@ async fn handle_list_skills() -> Result<serde_json::Value> {
         serde_json::json!({"name": "get_cursor", "description": "Get the current cursor position", "params": []}),
         serde_json::json!({"name": "where_am_i", "description": "Get spoken description of current location", "params": []}),
         serde_json::json!({"name": "get_context_lines", "description": "Get lines around cursor for spatial audio", "params": ["count"]}),
+        serde_json::json!({"name": "lsp_init", "description": "Initialize LSP server for a language", "params": ["command"]}),
         serde_json::json!({"name": "lsp_go_to_definition", "description": "Go to definition of symbol at cursor", "params": ["file", "line", "column"]}),
         serde_json::json!({"name": "lsp_hover", "description": "Get type info and docs for symbol at cursor", "params": ["file", "line", "column"]}),
         serde_json::json!({"name": "lsp_completions", "description": "Get code completions at position", "params": ["file", "line", "column"]}),
@@ -917,6 +1487,7 @@ async fn handle_list_skills() -> Result<serde_json::Value> {
         serde_json::json!({"name": "editor_indent_lines", "description": "Indent or outdent line range", "params": ["start", "end", "outdent"]}),
         serde_json::json!({"name": "editor_wrap_try_catch", "description": "Wrap selection in try-catch", "params": ["start", "end"]}),
         serde_json::json!({"name": "editor_extract_function", "description": "Extract selection to new function", "params": ["start", "end", "name"]}),
+        serde_json::json!({"name": "dap_init", "description": "Initialize DAP adapter for debugging", "params": ["command"]}),
         serde_json::json!({"name": "dap_start", "description": "Start a debug session", "params": ["program"]}),
         serde_json::json!({"name": "dap_stop", "description": "Stop debug session", "params": []}),
         serde_json::json!({"name": "dap_set_breakpoint", "description": "Set a breakpoint", "params": ["file", "line"]}),

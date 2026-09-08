@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::{oneshot, Mutex};
 
 // ---------------------------------------------------------------------------
 // Data types
@@ -312,7 +312,11 @@ impl LspClient {
     /// notifications sent by the server.
     pub async fn diagnostics(&self, file_uri: &str) -> Vec<LspDiagnostic> {
         let shared = self.shared.lock().await;
-        shared.diagnostics.get(file_uri).cloned().unwrap_or_default()
+        shared
+            .diagnostics
+            .get(file_uri)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Get all stored diagnostics, keyed by file URI.
@@ -322,14 +326,13 @@ impl LspClient {
     }
 
     /// Get document symbols for a file.
-    pub async fn document_symbols(
-        &mut self,
-        file_uri: &str,
-    ) -> Result<Vec<LspSymbol>> {
+    pub async fn document_symbols(&mut self, file_uri: &str) -> Result<Vec<LspSymbol>> {
         let params = json!({
             "textDocument": { "uri": file_uri },
         });
-        let result = self.send_request("textDocument/documentSymbol", params).await?;
+        let result = self
+            .send_request("textDocument/documentSymbol", params)
+            .await?;
 
         let mut symbols = Vec::new();
 
@@ -409,10 +412,7 @@ impl LspClient {
     /// Format the entire document.
     ///
     /// Returns a list of text edits to apply.
-    pub async fn formatting(
-        &mut self,
-        file_uri: &str,
-    ) -> Result<Vec<LspTextEdit>> {
+    pub async fn formatting(&mut self, file_uri: &str) -> Result<Vec<LspTextEdit>> {
         let params = json!({
             "textDocument": { "uri": file_uri },
             "options": {
@@ -502,8 +502,7 @@ impl LspClient {
         self.write_message(&msg).await?;
 
         // Await the response from the reader task.
-        rx.await
-            .context("LSP server closed before responding")?
+        rx.await.context("LSP server closed before responding")?
     }
 
     /// Write a JSON-RPC message to the server's stdin.
@@ -642,7 +641,7 @@ fn build_message(id: Option<u64>, method: &str, params: Value) -> String {
             Value::Number(serde_json::Number::from(id)),
         );
     }
-    serde_json::to_string(&Value::Object(msg)).expect("JSON-RPC message must serialize")
+    serde_json::to_string(&Value::Object(msg)).unwrap_or_default()
 }
 
 /// Parse the Content-Length value from a header line.
@@ -683,11 +682,7 @@ fn location_from_value(obj: &serde_json::Map<String, Value>, _fallback_uri: &str
 }
 
 /// Parse hover contents into type_info and docstring strings.
-fn parse_hover_contents(
-    contents: &Value,
-    type_info: &mut String,
-    _docstring: &mut String,
-) {
+fn parse_hover_contents(contents: &Value, type_info: &mut String, _docstring: &mut String) {
     match contents {
         Value::Object(map) => {
             // MarkupContent: { kind: "markdown" | "plaintext", value: "..." }
@@ -729,9 +724,16 @@ fn parse_hover_contents(
 fn parse_completion_item(item: &Value) -> Option<LspCompletionItem> {
     let obj = item.as_object()?;
     let label = obj.get("label")?.as_str()?.to_string();
-    let detail = obj.get("detail").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let detail = obj
+        .get("detail")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
     let kind = obj.get("kind").and_then(|v| v.as_u64()).map(|k| k as u32);
-    Some(LspCompletionItem { label, detail, kind })
+    Some(LspCompletionItem {
+        label,
+        detail,
+        kind,
+    })
 }
 
 /// Parse a single SymbolInformation or DocumentSymbol value.
@@ -783,7 +785,11 @@ fn parse_text_edit(edit: &Value) -> Option<LspTextEdit> {
     let start_column = start.get("character").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
     let end_line = end.get("line").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
     let end_column = end.get("character").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-    let new_text = obj.get("newText").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let new_text = obj
+        .get("newText")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
 
     Some(LspTextEdit {
         start_line,
@@ -807,10 +813,7 @@ fn parse_diagnostics(params: &Value) -> Vec<LspDiagnostic> {
     if let Some(items) = params.get("diagnostics").and_then(|v| v.as_array()) {
         for item in items {
             if let Some(obj) = item.as_object() {
-                let severity = obj
-                    .get("severity")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(4) as u8;
+                let severity = obj.get("severity").and_then(|v| v.as_u64()).unwrap_or(4) as u8;
                 let message = obj
                     .get("message")
                     .and_then(|v| v.as_str())

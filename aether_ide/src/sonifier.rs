@@ -84,9 +84,10 @@ pub fn boundary_earcon(boundary: &ScopeBoundary, is_start: bool) -> Option<Earco
     if is_start {
         match boundary.kind {
             ScopeKind::Class | ScopeKind::Module => Some(Earcon::ScopeEnter(boundary.kind.clone())),
-            ScopeKind::Function | ScopeKind::Method | ScopeKind::AsyncFunction | ScopeKind::AsyncMethod => {
-                Some(Earcon::ScopeEnter(boundary.kind.clone()))
-            }
+            ScopeKind::Function
+            | ScopeKind::Method
+            | ScopeKind::AsyncFunction
+            | ScopeKind::AsyncMethod => Some(Earcon::ScopeEnter(boundary.kind.clone())),
             ScopeKind::If | ScopeKind::Else | ScopeKind::Match => Some(Earcon::Conditional),
             ScopeKind::For | ScopeKind::While => Some(Earcon::LoopIteration),
             ScopeKind::Try => Some(Earcon::ScopeEnter(boundary.kind.clone())),
@@ -96,9 +97,10 @@ pub fn boundary_earcon(boundary: &ScopeBoundary, is_start: bool) -> Option<Earco
     } else {
         match boundary.kind {
             ScopeKind::Class | ScopeKind::Module => Some(Earcon::ScopeExit(boundary.kind.clone())),
-            ScopeKind::Function | ScopeKind::Method | ScopeKind::AsyncFunction | ScopeKind::AsyncMethod => {
-                Some(Earcon::ScopeExit(boundary.kind.clone()))
-            }
+            ScopeKind::Function
+            | ScopeKind::Method
+            | ScopeKind::AsyncFunction
+            | ScopeKind::AsyncMethod => Some(Earcon::ScopeExit(boundary.kind.clone())),
             _ => None,
         }
     }
@@ -132,9 +134,15 @@ pub fn sonify_tree(tree: &CodeTree) -> Vec<LineAudio> {
 
         // Determine earcon
         let earcon = if line_info.is_boundary_start {
-            line_info.boundary.as_ref().and_then(|b| boundary_earcon(b, true))
+            line_info
+                .boundary
+                .as_ref()
+                .and_then(|b| boundary_earcon(b, true))
         } else if line_info.is_boundary_end {
-            line_info.boundary.as_ref().and_then(|b| boundary_earcon(b, false))
+            line_info
+                .boundary
+                .as_ref()
+                .and_then(|b| boundary_earcon(b, false))
         } else if line_info.is_comment {
             Some(Earcon::Comment)
         } else if line_info.is_blank {
@@ -166,7 +174,7 @@ pub fn structure_summary(tree: &CodeTree) -> String {
 
     parts.push(format!(
         "File {}: {} lines, {}.",
-        tree.path.split('/').last().unwrap_or(&tree.path),
+        tree.path.split('/').next_back().unwrap_or(&tree.path),
         tree.total_lines,
         tree.language
     ));
@@ -176,28 +184,34 @@ pub fn structure_summary(tree: &CodeTree) -> String {
     let second_level: Vec<_> = tree.symbols.iter().filter(|s| s.depth == 1).collect();
 
     if !top_level.is_empty() {
-        let desc: Vec<String> = top_level.iter().map(|s| {
-            let kind = match s.kind {
-                SymbolKind::Class => "class",
-                SymbolKind::Function => "function",
-                SymbolKind::Method => "method",
-                SymbolKind::AsyncFunction => "async function",
-            };
-            format!("{} {} (line {})", kind, s.name, s.start_line + 1)
-        }).collect();
+        let desc: Vec<String> = top_level
+            .iter()
+            .map(|s| {
+                let kind = match s.kind {
+                    SymbolKind::Class => "class",
+                    SymbolKind::Function => "function",
+                    SymbolKind::Method => "method",
+                    SymbolKind::AsyncFunction => "async function",
+                };
+                format!("{} {} (line {})", kind, s.name, s.start_line + 1)
+            })
+            .collect();
         parts.push(format!("Top level: {}.", desc.join(", ")));
     }
 
     if !second_level.is_empty() {
-        let desc: Vec<String> = second_level.iter().map(|s| {
-            let kind = match s.kind {
-                SymbolKind::Class => "class",
-                SymbolKind::Function => "function",
-                SymbolKind::Method => "method",
-                SymbolKind::AsyncFunction => "async function",
-            };
-            format!("{} {} (line {})", kind, s.name, s.start_line + 1)
-        }).collect();
+        let desc: Vec<String> = second_level
+            .iter()
+            .map(|s| {
+                let kind = match s.kind {
+                    SymbolKind::Class => "class",
+                    SymbolKind::Function => "function",
+                    SymbolKind::Method => "method",
+                    SymbolKind::AsyncFunction => "async function",
+                };
+                format!("{} {} (line {})", kind, s.name, s.start_line + 1)
+            })
+            .collect();
         parts.push(format!("Nested: {}.", desc.join(", ")));
     }
 
@@ -218,11 +232,17 @@ pub fn tree_summary(tree: &CodeTree) -> String {
             SymbolKind::AsyncFunction => "async function",
         };
         let lines = symbol.end_line - symbol.start_line + 1;
-        parts.push(format!("{}{} {} ({} lines)", prefix, kind, symbol.name, lines));
+        parts.push(format!(
+            "{}{} {} ({} lines)",
+            prefix, kind, symbol.name, lines
+        ));
     }
 
     if parts.is_empty() {
-        format!("File has no top-level symbols. {} lines total.", tree.total_lines)
+        format!(
+            "File has no top-level symbols. {} lines total.",
+            tree.total_lines
+        )
     } else {
         format!("Structure: {}", parts.join(". "))
     }

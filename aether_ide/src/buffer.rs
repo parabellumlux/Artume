@@ -56,8 +56,8 @@ impl TextBuffer {
     /// The buffer's `path` is set to the canonicalised file path.
     pub fn load(path: &str) -> Result<Self> {
         let resolved = Path::new(path);
-        let content = fs::read_to_string(resolved)
-            .with_context(|| format!("Failed to read file: {path}"))?;
+        let content =
+            fs::read_to_string(resolved).with_context(|| format!("Failed to read file: {path}"))?;
         let canonical = resolved.canonicalize().ok();
         let path_str = canonical
             .as_deref()
@@ -82,8 +82,7 @@ impl TextBuffer {
             .path
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("No file path set for this buffer"))?;
-        fs::write(path, &self.content)
-            .with_context(|| format!("Failed to write file: {path}"))?;
+        fs::write(path, &self.content).with_context(|| format!("Failed to write file: {path}"))?;
         Ok(())
     }
 
@@ -188,7 +187,7 @@ impl TextBuffer {
         let mut replacements = Vec::new();
 
         // Collect all replacement positions first (to avoid borrow issues)
-        let bytes = self.content.as_bytes();
+        let _bytes = self.content.as_bytes();
         while pos < self.content.len() {
             if let Some(found) = self.content[pos..].find(old) {
                 let abs_pos = pos + found;
@@ -212,12 +211,18 @@ impl TextBuffer {
         } else {
             // Composite: record the full old range
             let first_start = replacements[0].0;
-            let last_end = replacements.last().unwrap().1;
+            let last_end = match replacements.last() {
+                Some(&(_, e)) => e,
+                None => return 0,
+            };
             self.content[first_start..last_end].to_string()
         };
 
         let start = replacements[0].0;
-        let end = replacements.last().unwrap().1;
+        let end = match replacements.last() {
+            Some(&(_, e)) => e,
+            None => return 0,
+        };
 
         for &(s, e) in replacements.iter().rev() {
             self.content.drain(s..e);

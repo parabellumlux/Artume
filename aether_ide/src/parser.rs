@@ -179,6 +179,7 @@ pub fn parse_file(path: &Path) -> Result<CodeTree> {
 /// Extracts structure by walking the tree-sitter CST.
 struct StructureExtractor<'a> {
     source: &'a str,
+    #[allow(dead_code)]
     language: &'a str,
     boundaries: Vec<ScopeBoundary>,
     symbols: Vec<Symbol>,
@@ -338,9 +339,8 @@ fn build_line_info(
 
         let line_text = lines.get(line_num).unwrap_or(&"");
         let trimmed = line_text.trim();
-        let is_comment = trimmed.starts_with('#')
-            || trimmed.starts_with("//")
-            || trimmed.starts_with("/*");
+        let is_comment =
+            trimmed.starts_with('#') || trimmed.starts_with("//") || trimmed.starts_with("/*");
         let is_blank = trimmed.is_empty();
         let token_count = line_text.split_whitespace().count();
 

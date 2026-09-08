@@ -6,6 +6,7 @@
 use anyhow::{Context, Result};
 use log::{info, warn};
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use parking_lot::Mutex;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::SystemTime;
@@ -102,7 +103,7 @@ pub struct ProjectIndex {
     /// Optional file-system watcher (active after `watch_project` is called).
     pub watcher: Option<RecommendedWatcher>,
     /// Receiver for watcher events.
-    watcher_rx: Option<mpsc::Receiver<Result<Event, notify::Error>>>,
+    watcher_rx: Option<Mutex<mpsc::Receiver<Result<Event, notify::Error>>>>,
 }
 
 impl ProjectIndex {
@@ -160,7 +161,7 @@ impl ProjectIndex {
         dir: &Path,
         config: &ProjectConfig,
         files: &mut Vec<ProjectFile>,
-        symbols: &mut Vec<ProjectSymbol>,
+        _symbols: &mut Vec<ProjectSymbol>,
     ) -> Result<()> {
         let entries = match std::fs::read_dir(dir) {
             Ok(e) => e,
@@ -188,7 +189,7 @@ impl ProjectIndex {
                         continue;
                     }
                 }
-                self.walk_dir(base, &path, config, files, symbols)?;
+                self.walk_dir(base, &path, config, files, _symbols)?;
                 continue;
             }
 
@@ -216,10 +217,7 @@ impl ProjectIndex {
             // Last modified
             let last_modified = path.metadata().ok().and_then(|m| m.modified().ok());
 
-            let relative = path
-                .strip_prefix(base)
-                .unwrap_or(&path)
-                .to_path_buf();
+            let relative = path.strip_prefix(base).unwrap_or(&path).to_path_buf();
 
             files.push(ProjectFile {
                 path: relative,
@@ -346,8 +344,7 @@ impl ProjectIndex {
         file_paths.sort();
 
         // Build a set of all paths (dirs + files) for quick lookup
-        let all_paths: std::collections::HashSet<&PathBuf> =
-            file_paths.iter().copied().collect();
+        let all_paths: std::collections::HashSet<&PathBuf> = file_paths.iter().copied().collect();
 
         // Render the tree
         render_tree_nodes(
@@ -384,7 +381,7 @@ impl ProjectIndex {
         info!("Watching project directory: {}", self.root.display());
 
         self.watcher = Some(watcher);
-        self.watcher_rx = Some(rx);
+        self.watcher_rx = Some(Mutex::new(rx));
 
         Ok(())
     }
@@ -393,33 +390,36 @@ impl ProjectIndex {
     ///
     /// Returns `true` if a re-scan was triggered.
     pub fn poll_watcher(&mut self, config: &ProjectConfig) -> Result<bool> {
-        let rx = match &self.watcher_rx {
-            Some(rx) => rx,
-            None => return Ok(false),
-        };
-
         let mut needs_rescan = false;
 
-        // Drain all available events (non-blocking)
-        while let Ok(event) = rx.try_recv() {
-            match event {
-                Ok(event) => {
-                    let kind = &event.kind;
-                    match kind {
-                        EventKind::Create(_) | EventKind::Remove(_) => {
-                            info!(
-                                "File system change detected ({:?}): {:?}",
-                                kind, event.paths
-                            );
-                            needs_rescan = true;
-                        }
-                        _ => {
-                            // Ignore modify and other events for now
+        // Drain all available events (non-blocking). Scope the locked receiver
+        // so the guard is dropped before the re-scan below.
+        {
+            let rx = match &self.watcher_rx {
+                Some(rx) => rx.lock(),
+                None => return Ok(false),
+            };
+
+            while let Ok(event) = rx.try_recv() {
+                match event {
+                    Ok(event) => {
+                        let kind = &event.kind;
+                        match kind {
+                            EventKind::Create(_) | EventKind::Remove(_) => {
+                                info!(
+                                    "File system change detected ({:?}): {:?}",
+                                    kind, event.paths
+                                );
+                                needs_rescan = true;
+                            }
+                            _ => {
+                                // Ignore modify and other events for now
+                            }
                         }
                     }
-                }
-                Err(e) => {
-                    warn!("Watcher error: {}", e);
+                    Err(e) => {
+                        warn!("Watcher error: {}", e);
+                    }
                 }
             }
         }
@@ -468,7 +468,7 @@ fn render_tree_nodes(
     prefix: &Path,
     dirs: &[PathBuf],
     files: &[&PathBuf],
-    all_paths: &std::collections::HashSet<&PathBuf>,
+    _all_paths: &std::collections::HashSet<&PathBuf>,
     lines: &mut Vec<String>,
 ) {
     // Collect immediate children of this prefix
@@ -496,11 +496,16 @@ fn render_tree_nodes(
         let is_last = i + 1 == total_children;
         let connector = if is_last { "└── " } else { "├── " };
         let dir_name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("?");
-        lines.push(format!("{}{}{}/", "    ".repeat(prefix.components().count()), connector, dir_name));
+        lines.push(format!(
+            "{}{}{}/",
+            "    ".repeat(prefix.components().count()),
+            connector,
+            dir_name
+        ));
 
         // Recurse into this directory
         let child_prefix = (*dir).clone();
-        render_tree_nodes(&child_prefix, dirs, files, all_paths, lines);
+        render_tree_nodes(&child_prefix, dirs, files, _all_paths, lines);
     }
 
     for (i, file) in child_files.iter().enumerate() {
@@ -508,7 +513,12 @@ fn render_tree_nodes(
         let is_last = i + dir_offset + 1 == total_children;
         let connector = if is_last { "└── " } else { "├── " };
         let file_name = file.file_name().and_then(|n| n.to_str()).unwrap_or("?");
-        lines.push(format!("{}{}{}", "    ".repeat(prefix.components().count()), connector, file_name));
+        lines.push(format!(
+            "{}{}{}",
+            "    ".repeat(prefix.components().count()),
+            connector,
+            file_name
+        ));
     }
 }
 
@@ -561,7 +571,11 @@ mod tests {
         let (_dir, config) = create_temp_project();
         let index = ProjectIndex::scan(&config).unwrap();
 
-        assert_eq!(index.files.len(), 4, "Should find 4 files (3 .rs + 1 .toml)");
+        assert_eq!(
+            index.files.len(),
+            4,
+            "Should find 4 files (3 .rs + 1 .toml)"
+        );
         assert!(
             index.files.iter().any(|f| f.path.ends_with("main.rs")),
             "Should contain main.rs"
@@ -572,7 +586,10 @@ mod tests {
         );
         // target/ should be excluded
         assert!(
-            !index.files.iter().any(|f| f.path.to_string_lossy().contains("target")),
+            !index
+                .files
+                .iter()
+                .any(|f| f.path.to_string_lossy().contains("target")),
             "Should not contain files from excluded dirs"
         );
     }
@@ -612,7 +629,10 @@ mod tests {
         assert!(tree.contains("src/"), "Tree should contain src/");
         assert!(tree.contains("main.rs"), "Tree should contain main.rs");
         assert!(tree.contains("parser.rs"), "Tree should contain parser.rs");
-        assert!(tree.contains("Cargo.toml"), "Tree should contain Cargo.toml");
+        assert!(
+            tree.contains("Cargo.toml"),
+            "Tree should contain Cargo.toml"
+        );
     }
 
     #[test]
@@ -622,7 +642,10 @@ mod tests {
 
         // No symbols were extracted (we don't parse in scan_project)
         let results = index.find_symbol("main");
-        assert!(results.is_empty(), "Should be empty since no symbols extracted");
+        assert!(
+            results.is_empty(),
+            "Should be empty since no symbols extracted"
+        );
     }
 
     #[test]

@@ -126,31 +126,20 @@ pub struct Variable {
 #[derive(Debug, Clone)]
 pub enum DapEvent {
     /// The debugee stopped at a breakpoint.
-    BreakpointHit {
-        thread_id: u64,
-        reason: String,
-    },
+    BreakpointHit { thread_id: u64, reason: String },
     /// The debugee stopped due to an exception.
     Exception {
         thread_id: u64,
         description: Option<String>,
     },
     /// A step command completed.
-    StepComplete {
-        thread_id: u64,
-    },
+    StepComplete { thread_id: u64 },
     /// A new thread was started.
-    ThreadStarted {
-        thread_id: u64,
-    },
+    ThreadStarted { thread_id: u64 },
     /// A thread exited.
-    ThreadExited {
-        thread_id: u64,
-    },
+    ThreadExited { thread_id: u64 },
     /// The debugee process exited.
-    ProcessExited {
-        exit_code: i64,
-    },
+    ProcessExited { exit_code: i64 },
 }
 
 /// The debug session state, tracking breakpoints, stack frames, and variables.
@@ -454,12 +443,7 @@ impl DapClient {
         info!("Continuing execution");
 
         // Use threadId 0 (all threads) or the first stopped thread.
-        let thread_id = self
-            .session
-            .stack_frames
-            .first()
-            .map(|_| 0u64)
-            .unwrap_or(0);
+        let thread_id = self.session.stack_frames.first().map(|_| 0u64).unwrap_or(0);
 
         let args = json!({
             "threadId": thread_id,
@@ -647,7 +631,10 @@ impl DapClient {
     /// `expression` is the expression to evaluate (e.g. `"x + 1"`).
     /// `frame_id` is the stack frame ID to evaluate in (from [`get_stack_trace`]).
     pub async fn evaluate(&mut self, expression: &str, frame_id: u64) -> Result<Variable> {
-        info!("Evaluating expression: '{}' in frame {}", expression, frame_id);
+        info!(
+            "Evaluating expression: '{}' in frame {}",
+            expression, frame_id
+        );
 
         let args = json!({
             "expression": expression,
@@ -739,8 +726,7 @@ impl DapClient {
         self.write_message(&msg).await?;
 
         // Await the response from the reader task.
-        rx.await
-            .context("DAP adapter closed before responding")?
+        rx.await.context("DAP adapter closed before responding")?
     }
 
     /// Write a DAP message to the adapter's stdin.
@@ -759,10 +745,7 @@ impl DapClient {
             .write_all(msg.as_bytes())
             .await
             .context("Failed to write DAP body")?;
-        stdin
-            .flush()
-            .await
-            .context("Failed to flush DAP stdin")?;
+        stdin.flush().await.context("Failed to flush DAP stdin")?;
 
         Ok(())
     }
@@ -771,10 +754,7 @@ impl DapClient {
     ///
     /// Reads Content-Length framed JSON-RPC messages, dispatches responses
     /// to pending requests, and buffers events for the client to drain.
-    async fn reader_loop(
-        stdout: tokio::process::ChildStdout,
-        shared: Arc<Mutex<DapShared>>,
-    ) {
+    async fn reader_loop(stdout: tokio::process::ChildStdout, shared: Arc<Mutex<DapShared>>) {
         let mut reader = BufReader::new(stdout);
         let mut buf = String::new();
 
@@ -834,7 +814,10 @@ impl DapClient {
                 "response" => {
                     // Response to a request.
                     let request_seq = msg["request_seq"].as_u64().unwrap_or(0);
-                    let success = msg.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
+                    let success = msg
+                        .get("success")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
 
                     let result = if success {
                         Ok(msg.get("body").cloned().unwrap_or(Value::Null))
@@ -851,10 +834,7 @@ impl DapClient {
                     if let Some(sender) = shared.pending.remove(&request_seq) {
                         let _ = sender.send(result);
                     } else {
-                        warn!(
-                            "Received response for unknown request seq: {}",
-                            request_seq
-                        );
+                        warn!("Received response for unknown request seq: {}", request_seq);
                     }
                 }
                 "event" => {
@@ -899,17 +879,14 @@ impl Drop for DapClient {
 /// `"request"`. Arguments are placed in the `arguments` field.
 fn build_dap_message(seq: u64, command: &str, arguments: Value) -> String {
     let mut msg = serde_json::Map::new();
-    msg.insert("seq".to_string(), Value::Number(serde_json::Number::from(seq)));
     msg.insert(
-        "type".to_string(),
-        Value::String("request".to_string()),
+        "seq".to_string(),
+        Value::Number(serde_json::Number::from(seq)),
     );
-    msg.insert(
-        "command".to_string(),
-        Value::String(command.to_string()),
-    );
+    msg.insert("type".to_string(), Value::String("request".to_string()));
+    msg.insert("command".to_string(), Value::String(command.to_string()));
     msg.insert("arguments".to_string(), arguments);
-    serde_json::to_string(&Value::Object(msg)).expect("DAP message must serialize")
+    serde_json::to_string(&Value::Object(msg)).unwrap_or_default()
 }
 
 /// Parse the Content-Length value from a header line.
@@ -933,7 +910,10 @@ fn parse_breakpoint(val: &Value, file: &str) -> Option<Breakpoint> {
     let obj = val.as_object()?;
     let id = obj.get("id").and_then(|v| v.as_u64())?;
     let line = obj.get("line").and_then(|v| v.as_u64())?;
-    let verified = obj.get("verified").and_then(|v| v.as_bool()).unwrap_or(false);
+    let verified = obj
+        .get("verified")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let condition = obj
         .get("condition")
         .and_then(|v| v.as_str())
@@ -1298,14 +1278,8 @@ mod tests {
         let config = DapConfig::new()
             .register("python", &["debugpy-adapter"])
             .register("rust", &["lldb-vscode"]);
-        assert_eq!(
-            config.command_for("python").unwrap(),
-            &["debugpy-adapter"]
-        );
-        assert_eq!(
-            config.command_for("rust").unwrap(),
-            &["lldb-vscode"]
-        );
+        assert_eq!(config.command_for("python").unwrap(), &["debugpy-adapter"]);
+        assert_eq!(config.command_for("rust").unwrap(), &["lldb-vscode"]);
         assert!(config.command_for("go").is_none());
     }
 
