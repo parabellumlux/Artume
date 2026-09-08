@@ -193,8 +193,8 @@ impl ContextStack {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::spatial_mixer::VirtualSource;
     use crate::spatial_mixer::SpatialPosition;
+    use crate::spatial_mixer::VirtualSource;
     use approx::assert_relative_eq;
 
     /// Simulate an audio interruption and stack recovery.
@@ -207,10 +207,7 @@ mod tests {
     #[test]
     fn test_interruption_push_pop() {
         let mut mixer = SpatialMixer::new();
-        mixer.add_source(VirtualSource::new(
-            "Primary Voice",
-            SpatialPosition::CENTRE,
-        ));
+        mixer.add_source(VirtualSource::new("Primary Voice", SpatialPosition::CENTRE));
 
         let stack = ContextStack::new(8);
 
@@ -260,10 +257,7 @@ mod tests {
     #[test]
     fn test_nested_interruptions() {
         let mut mixer = SpatialMixer::new();
-        mixer.add_source(VirtualSource::new(
-            "Primary Voice",
-            SpatialPosition::CENTRE,
-        ));
+        mixer.add_source(VirtualSource::new("Primary Voice", SpatialPosition::CENTRE));
 
         let stack = ContextStack::new(8);
 
@@ -290,17 +284,16 @@ mod tests {
         assert_eq!(stack.depth(), 0);
 
         // Popping an empty stack should return None.
-        assert!(stack.pop_restore(&mut mixer, "Primary Voice", 150).is_none());
+        assert!(stack
+            .pop_restore(&mut mixer, "Primary Voice", 150)
+            .is_none());
     }
 
     /// Test that the stack enforces its maximum depth.
     #[test]
     fn test_max_depth() {
         let mut mixer = SpatialMixer::new();
-        mixer.add_source(VirtualSource::new(
-            "Primary Voice",
-            SpatialPosition::CENTRE,
-        ));
+        mixer.add_source(VirtualSource::new("Primary Voice", SpatialPosition::CENTRE));
 
         let stack = ContextStack::new(3);
 
@@ -323,10 +316,7 @@ mod tests {
     #[test]
     fn test_peek() {
         let mut mixer = SpatialMixer::new();
-        mixer.add_source(VirtualSource::new(
-            "Primary Voice",
-            SpatialPosition::CENTRE,
-        ));
+        mixer.add_source(VirtualSource::new("Primary Voice", SpatialPosition::CENTRE));
 
         let stack = ContextStack::new(8);
 
@@ -352,10 +342,7 @@ mod tests {
     #[test]
     fn test_clear() {
         let mut mixer = SpatialMixer::new();
-        mixer.add_source(VirtualSource::new(
-            "Primary Voice",
-            SpatialPosition::CENTRE,
-        ));
+        mixer.add_source(VirtualSource::new("Primary Voice", SpatialPosition::CENTRE));
 
         let stack = ContextStack::new(8);
 

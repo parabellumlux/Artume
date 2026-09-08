@@ -36,7 +36,11 @@ impl TtsService {
             while let Ok(text) = rx.recv() {
                 match engine.synthesize(&text) {
                     Ok(samples) => {
-                        info!("TtsService: synthesized {} samples for '{}'", samples.len(), &text[..text.len().min(40)]);
+                        info!(
+                            "TtsService: synthesized {} samples for '{}'",
+                            samples.len(),
+                            &text[..text.len().min(40)]
+                        );
                         let _ = out_tx.send(PlaybackRequest {
                             samples,
                             sample_rate: 22050,

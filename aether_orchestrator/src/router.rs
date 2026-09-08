@@ -51,7 +51,9 @@ impl Intent {
     pub fn from_label(s: &str) -> Self {
         let lower = s.trim().to_lowercase();
         match lower.as_str() {
-            "conversation" | "chat" | "talk" | "greeting" | "hello" | "general" => Self::Conversation,
+            "conversation" | "chat" | "talk" | "greeting" | "hello" | "general" => {
+                Self::Conversation
+            }
             "entity_lookup" | "entitylookup" | "lookup" | "entity" => Self::EntityLookup,
             "web_fetch" | "webfetch" | "fetch" | "web" | "browse" | "read" => Self::WebFetch,
             "file_search" | "filesearch" | "search" | "file" | "find" => Self::FileSearch,
@@ -60,11 +62,17 @@ impl Intent {
             "switch_mode" | "switchmode" | "switch" | "mode" => Self::SwitchMode,
             _ => {
                 // Also check if the label is embedded in a longer response
-                if lower.contains("conversation") || lower.contains("chat") || lower.contains("talk") {
+                if lower.contains("conversation")
+                    || lower.contains("chat")
+                    || lower.contains("talk")
+                {
                     Self::Conversation
                 } else if lower.contains("entity") || lower.contains("lookup") {
                     Self::EntityLookup
-                } else if lower.contains("web") || lower.contains("fetch") || lower.contains("browse") {
+                } else if lower.contains("web")
+                    || lower.contains("fetch")
+                    || lower.contains("browse")
+                {
                     Self::WebFetch
                 } else if lower.contains("file") || lower.contains("search") {
                     Self::FileSearch
@@ -161,7 +169,10 @@ impl IntentRouter {
         match self.client.classify_intent(utterance).await {
             Ok(label) => {
                 let trimmed_label = label.trim();
-                info!("IntentRouter: raw model output for '{}' → '{}'", utterance, trimmed_label);
+                info!(
+                    "IntentRouter: raw model output for '{}' → '{}'",
+                    utterance, trimmed_label
+                );
                 if trimmed_label.is_empty() {
                     // Model returned nothing — fall back to conversation
                     info!("IntentRouter: empty response from model, defaulting to Conversation");
@@ -203,7 +214,10 @@ mod tests {
         assert_eq!(Intent::from_label("switch_mode"), Intent::SwitchMode);
         assert_eq!(Intent::from_label("garbage"), Intent::Unknown);
         // Fuzzy matching
-        assert_eq!(Intent::from_label("this is a conversation"), Intent::Conversation);
+        assert_eq!(
+            Intent::from_label("this is a conversation"),
+            Intent::Conversation
+        );
         assert_eq!(Intent::from_label("web browsing"), Intent::WebFetch);
     }
 

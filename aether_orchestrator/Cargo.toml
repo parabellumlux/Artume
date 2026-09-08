@@ -26,7 +26,7 @@ tokio-stream = { version = "0.1", features = ["net"] }
 
 # Audio I/O
 hound = "3"
-cpal = "0.15"
+cpal = "0.17"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

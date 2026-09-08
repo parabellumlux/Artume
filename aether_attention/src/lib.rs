@@ -12,10 +12,12 @@
 //!                    └── Critical?  → Gentle Spatial Interruption
 //! ```
 
-pub mod event;
 pub mod evaluator;
+pub mod event;
 pub mod queue;
 
-pub use event::{EventCategory, EventSeverity, SystemEvent, event_channel, EventSender, EventReceiver};
 pub use evaluator::{CognitiveLoadEvaluator, DeliveryDecision, UserFocusLevel};
+pub use event::{
+    event_channel, EventCategory, EventReceiver, EventSender, EventSeverity, SystemEvent,
+};
 pub use queue::PendingNotificationQueue;

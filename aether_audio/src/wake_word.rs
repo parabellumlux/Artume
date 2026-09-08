@@ -12,12 +12,11 @@
 //! Uses `oww-rs` under the hood which bundles pre-trained OpenWakeWord models
 //! (Alexa, Hey Mycroft, Hey Jarvis) and supports loading custom `.onnx` files.
 
-use log::{debug, info, warn};
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use log::{info, warn};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
 // ---------------------------------------------------------------------------
 // Wake word detection events
@@ -111,7 +110,10 @@ impl WakeWordDetector {
         let model_source = config.model_source.clone();
 
         thread::spawn(move || {
-            info!("WakeWordDetector: starting with model '{}'", trigger_word_for_thread);
+            info!(
+                "WakeWordDetector: starting with model '{}'",
+                trigger_word_for_thread
+            );
 
             // Build the OWW model
             let mut model = match build_model(&model_source, threshold) {
@@ -125,29 +127,43 @@ impl WakeWordDetector {
             };
 
             // Open the microphone
-            let host = match cpal::default_host() {
-                h => h,
-            };
+            let host = cpal::default_host();
 
             let device = match config.device_name.as_ref() {
-                Some(name) => {
-                    host.devices()
-                        .ok()
-                        .and_then(|devs| {
-                            devs.filter(|d| {
-                                d.name().map(|n| n.contains(name)).unwrap_or(false)
-                            })
-                            .next()
+                Some(name) => host
+                    .devices()
+                    .ok()
+                    .and_then(|mut devs| {
+                        devs.find(|d| {
+                            d.description()
+                                .map(|desc| desc.name().contains(name))
+                                .unwrap_or(false)
                         })
-                        .unwrap_or_else(|| {
-                            warn!("WakeWordDetector: device '{}' not found, using default", name);
-                            host.default_input_device().expect("No input device available")
-                        })
-                }
-                None => host.default_input_device().expect("No input device available"),
+                    })
+                    .or_else(|| {
+                        warn!(
+                            "WakeWordDetector: device '{}' not found, using default",
+                            name
+                        );
+                        host.default_input_device()
+                    }),
+                None => host.default_input_device(),
             };
 
-            let device_desc = device.name().unwrap_or_else(|_| "unknown".to_string());
+            let device = match device {
+                Some(d) => d,
+                None => {
+                    let msg = "No input device available".to_string();
+                    warn!("WakeWordDetector: {}", msg);
+                    let _ = event_tx.send(WakeWordEvent::Error(msg));
+                    return;
+                }
+            };
+
+            let device_desc = device
+                .description()
+                .map(|d| d.name().to_string())
+                .unwrap_or_else(|_| "unknown".to_string());
             info!("WakeWordDetector: using mic device: {}", device_desc);
 
             // Find best config
@@ -189,12 +205,8 @@ impl WakeWordDetector {
                 &config,
                 sample_format,
                 move |data| {
-                    let chunks = resample_into_chunks(
-                        data,
-                        &buffer_clone,
-                        channels,
-                        &mut resampler,
-                    );
+                    let chunks =
+                        resample_into_chunks(data, &buffer_clone, channels, &mut resampler);
                     for chunk in chunks {
                         if let Some(channel_data) = chunk.data_f32.get(0) {
                             let d = model.detection(channel_data.to_vec());
@@ -228,7 +240,10 @@ impl WakeWordDetector {
                 return;
             }
 
-            info!("WakeWordDetector: listening for '{}'", trigger_word_for_thread);
+            info!(
+                "WakeWordDetector: listening for '{}'",
+                trigger_word_for_thread
+            );
 
             // Block until stop signal
             let _ = stop_rx.recv();
@@ -276,13 +291,12 @@ impl Drop for WakeWordDetector {
 // Helpers — thin wrappers around oww_rs / audio_tools internals
 // ---------------------------------------------------------------------------
 
-use oww_rs::config::SpeechUnlockType;
-use oww_rs::oww::OwwModel;
-use oww_rs::oww::OWW_MODEL_CHUNK_SIZE;
 use audio_tools::mic_config::find_best_config;
 use audio_tools::process_audio::resample_into_chunks;
 use audio_tools::resampler::make_resampler;
+use oww_rs::config::SpeechUnlockType;
 use oww_rs::mic_cpal::build_input_stream;
+use oww_rs::oww::OwwModel;
 
 fn build_model(source: &WakeWordModel, threshold: f32) -> Result<OwwModel, String> {
     match source {
@@ -320,7 +334,10 @@ mod tests {
     #[test]
     fn test_trigger_word_builtin() {
         assert_eq!(WakeWordModel::BuiltInAlexa.trigger_word(), "Alexa");
-        assert_eq!(WakeWordModel::BuiltInHeyMycroft.trigger_word(), "Hey Mycroft");
+        assert_eq!(
+            WakeWordModel::BuiltInHeyMycroft.trigger_word(),
+            "Hey Mycroft"
+        );
         assert_eq!(WakeWordModel::BuiltInHeyJarvis.trigger_word(), "Hey Jarvis");
     }
 

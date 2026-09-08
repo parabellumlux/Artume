@@ -5,7 +5,6 @@
 
 use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
 // Extracted content
@@ -203,10 +202,7 @@ impl ReadabilityExtractor {
                 continue;
             }
             // Collapse whitespace.
-            let cleaned = trimmed
-                .split_whitespace()
-                .collect::<Vec<_>>()
-                .join(" ");
+            let cleaned = trimmed.split_whitespace().collect::<Vec<_>>().join(" ");
             if !result.is_empty() {
                 result.push(' ');
             }
@@ -263,10 +259,7 @@ impl ReadabilityExtractor {
 
                 if row_count > 0 && col_count > 0 {
                     let summary = if headers.is_empty() {
-                        format!(
-                            "Table with {} rows and {} columns",
-                            row_count, col_count
-                        )
+                        format!("Table with {} rows and {} columns", row_count, col_count)
                     } else {
                         format!(
                             "Table with {} rows and {} columns. Headers: {}",
@@ -391,10 +384,7 @@ impl ConversationalFormatter {
         if !content.body_text.is_empty() {
             // Truncate very long body text for speech.
             let body = if content.body_text.len() > 2000 {
-                format!(
-                    "{}... (content continues)",
-                    &content.body_text[..2000]
-                )
+                format!("{}... (content continues)", &content.body_text[..2000])
             } else {
                 content.body_text.clone()
             };
@@ -426,10 +416,18 @@ impl ConversationalFormatter {
                 if action_count == 1 { "" } else { "s" }
             );
             if search_count > 0 {
-                action_desc.push_str(&format!(" {} search field{}", search_count, if search_count == 1 { "" } else { "s" }));
+                action_desc.push_str(&format!(
+                    " {} search field{}",
+                    search_count,
+                    if search_count == 1 { "" } else { "s" }
+                ));
             }
             if button_count > 0 {
-                action_desc.push_str(&format!(" {} button{}", button_count, if button_count == 1 { "" } else { "s" }));
+                action_desc.push_str(&format!(
+                    " {} button{}",
+                    button_count,
+                    if button_count == 1 { "" } else { "s" }
+                ));
             }
             parts.push(action_desc);
         }
@@ -443,15 +441,9 @@ impl ConversationalFormatter {
                     .iter()
                     .map(|l| format!("\"{}\"", l.text))
                     .collect();
-                parts.push(format!(
-                    "Links: {}.",
-                    link_texts.join(", ")
-                ));
+                parts.push(format!("Links: {}.", link_texts.join(", ")));
             } else {
-                parts.push(format!(
-                    "This page has {} links.",
-                    link_count
-                ));
+                parts.push(format!("This page has {} links.", link_count));
             }
         }
 
@@ -519,29 +511,25 @@ mod tests {
     fn test_conversational_format() {
         let content = ExtractedContent {
             title: "Local Pharmacy".to_string(),
-            body_text: "The pharmacy on 4th street is open until 9 PM. They have flu shots available.".to_string(),
-            actions: vec![
-                ActionableElement {
-                    element_type: "search_input".to_string(),
-                    label: Some("Search medications".to_string()),
-                    placeholder: None,
-                },
-            ],
-            tables: vec![
-                TableDescription {
-                    caption: Some("Hours".to_string()),
-                    row_count: 7,
-                    column_count: 2,
-                    headers: vec!["Day".to_string(), "Hours".to_string()],
-                    summary: "Table with 7 rows and 2 columns. Headers: Day, Hours".to_string(),
-                },
-            ],
-            links: vec![
-                ContentLink {
-                    text: "Contact Us".to_string(),
-                    url: "/contact".to_string(),
-                },
-            ],
+            body_text:
+                "The pharmacy on 4th street is open until 9 PM. They have flu shots available."
+                    .to_string(),
+            actions: vec![ActionableElement {
+                element_type: "search_input".to_string(),
+                label: Some("Search medications".to_string()),
+                placeholder: None,
+            }],
+            tables: vec![TableDescription {
+                caption: Some("Hours".to_string()),
+                row_count: 7,
+                column_count: 2,
+                headers: vec!["Day".to_string(), "Hours".to_string()],
+                summary: "Table with 7 rows and 2 columns. Headers: Day, Hours".to_string(),
+            }],
+            links: vec![ContentLink {
+                text: "Contact Us".to_string(),
+                url: "/contact".to_string(),
+            }],
             metadata: ExtractionMetadata {
                 original_html_size: 5000,
                 extracted_text_size: 200,
@@ -602,7 +590,10 @@ mod tests {
 
         let content = ReadabilityExtractor::extract(html);
         assert!(content.actions.len() >= 3);
-        assert!(content.actions.iter().any(|a| a.element_type == "search_input"));
+        assert!(content
+            .actions
+            .iter()
+            .any(|a| a.element_type == "search_input"));
         assert!(content.actions.iter().any(|a| a.element_type == "button"));
         assert!(content.actions.iter().any(|a| a.element_type == "form"));
     }

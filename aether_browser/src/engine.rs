@@ -7,7 +7,7 @@
 //! ## Performance Target
 //! - Page fetch + DOM extraction: < 300 ms for typical pages.
 
-use log::{debug, info, warn};
+use log::{debug, info};
 use reqwest::Client;
 use std::time::Instant;
 use thiserror::Error;
@@ -131,7 +131,7 @@ impl BrowserEngine {
         let resolved_url = response.url().to_string();
 
         // Get the content type to verify it's HTML.
-        let content_type = response
+        let _content_type = response
             .headers()
             .get(reqwest::header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
@@ -172,19 +172,22 @@ impl BrowserEngine {
         timeout_secs: u64,
     ) -> Result<FetchResult, BrowserError> {
         let fetch = self.fetch(url);
-        tokio::time::timeout(
-            tokio::time::Duration::from_secs(timeout_secs),
-            fetch,
-        )
-        .await
-        .map_err(|_| BrowserError::Timeout { url: url.to_string() })?
+        tokio::time::timeout(tokio::time::Duration::from_secs(timeout_secs), fetch)
+            .await
+            .map_err(|_| BrowserError::Timeout {
+                url: url.to_string(),
+            })?
     }
 
     /// Search the web via DuckDuckGo HTML and return the top results.
     ///
     /// Uses the lightweight HTML endpoint (no JS) so it works with a plain
     /// HTTP client. Returns up to `limit` results.
-    pub async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>, BrowserError> {
+    pub async fn search(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<SearchResult>, BrowserError> {
         use scraper::{Html, Selector};
 
         let encoded: String = url::form_urlencoded::Serializer::new(String::new())
@@ -215,9 +218,8 @@ impl BrowserEngine {
             .map_err(|e| BrowserError::HttpError(e.to_string()))?;
 
         let document = Html::parse_document(&html);
-        let selector = Selector::parse("a.result__a").map_err(|e| {
-            BrowserError::ExtractionFailed(format!("bad selector: {e}"))
-        })?;
+        let selector = Selector::parse("a.result__a")
+            .map_err(|e| BrowserError::ExtractionFailed(format!("bad selector: {e}")))?;
 
         let mut results = Vec::new();
         for el in document.select(&selector).take(limit) {
@@ -227,8 +229,8 @@ impl BrowserEngine {
             if let Some(pos) = href.find("uddg=") {
                 let after = &href[pos + 5..];
                 let end = after.find('&').unwrap_or(after.len());
-                if let Ok(decoded) = percent_encoding::percent_decode_str(&after[..end])
-                    .decode_utf8()
+                if let Ok(decoded) =
+                    percent_encoding::percent_decode_str(&after[..end]).decode_utf8()
                 {
                     href = decoded.to_string();
                 }
@@ -240,7 +242,11 @@ impl BrowserEngine {
             }
         }
 
-        info!("BrowserEngine: search '{}' returned {} results", query, results.len());
+        info!(
+            "BrowserEngine: search '{}' returned {} results",
+            query,
+            results.len()
+        );
         Ok(results)
     }
 

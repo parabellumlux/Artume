@@ -11,17 +11,18 @@ use crate::file_search::FileSearchClient;
 use crate::ollama::{OllamaClient, OllamaModel};
 use crate::profile::UserProfile;
 use crate::router::{Intent, IntentRouter, RouterConfig};
+use crate::skills::{SkillContext, SkillRegistry};
 #[cfg(feature = "stt")]
 use crate::stt::{SttConfig, SttEngine};
 #[cfg(feature = "tts")]
 use crate::tts::{TtsConfig, TtsEngine};
 use aether_attention::{
-    CognitiveLoadEvaluator, DeliveryDecision, PendingNotificationQueue, SystemEvent,
-    EventCategory, EventSeverity,
+    CognitiveLoadEvaluator, DeliveryDecision, EventCategory, EventSeverity,
+    PendingNotificationQueue, SystemEvent,
 };
+use aether_audio::wake_word::{WakeWordConfig, WakeWordDetector, WakeWordEvent, WakeWordModel};
 use aether_audio::{ContextStack, SpatialMixer, SpatialPosition, VirtualSource};
-use aether_audio::wake_word::{WakeWordDetector, WakeWordConfig, WakeWordModel, WakeWordEvent};
-use aether_browser::{BrowserEngine, ReadabilityExtractor, ConversationalFormatter};
+use aether_browser::{BrowserEngine, ConversationalFormatter, ReadabilityExtractor};
 use aether_buffer::{ContextResolver, TranscriptRingBuffer};
 use log::{debug, info, warn};
 use std::path::PathBuf;
@@ -117,6 +118,7 @@ pub struct ConversationLoop {
     /// File search client for aetherfs-core daemon.
     file_search: FileSearchClient,
     /// Spatial audio mixer for binaural TTS output.
+    #[allow(dead_code)]
     spatial_mixer: SpatialMixer,
     /// Audio context stack for interruption handling.
     #[allow(dead_code)]
@@ -144,6 +146,10 @@ pub struct ConversationLoop {
     is_first_run: bool,
     /// Wake word detector (background thread).
     wake_word: Option<WakeWordDetector>,
+    /// Skill registry (built-in + file-based skills).
+    skills: SkillRegistry,
+    /// Current UI mode (e.g., "DESKTOP", "IDE", "BROWSER", "EMAIL").
+    current_mode: String,
 }
 
 impl ConversationLoop {
@@ -161,11 +167,10 @@ impl ConversationLoop {
         let file_search = FileSearchClient::new(Some(config.file_search_socket.clone()));
 
         // Load the soul identity from soul.md.
-        let soul_text = std::fs::read_to_string(&config.soul_path)
-            .unwrap_or_else(|e| {
-                warn!("Failed to load soul.md from '{}': {e}", config.soul_path);
-                String::new()
-            });
+        let soul_text = std::fs::read_to_string(&config.soul_path).unwrap_or_else(|e| {
+            warn!("Failed to load soul.md from '{}': {e}", config.soul_path);
+            String::new()
+        });
 
         // Load or initialise the user profile.
         let (profile, is_first_run) = if UserProfile::is_first_run() {
@@ -192,12 +197,13 @@ impl ConversationLoop {
         // Wake word detection starts as None — call start_wake_word() to enable.
         let wake_word = None;
 
+        // Initialise skill registry (built-in + file-based).
+        let mut skills = SkillRegistry::new();
+        skills.load_file_skills();
+
         // Initialise spatial audio with default sources.
         let mut spatial_mixer = SpatialMixer::new();
-        spatial_mixer.add_source(VirtualSource::new(
-            "Primary Voice",
-            SpatialPosition::CENTRE,
-        ));
+        spatial_mixer.add_source(VirtualSource::new("Primary Voice", SpatialPosition::CENTRE));
         spatial_mixer.add_source(VirtualSource::new(
             "System Alert",
             SpatialPosition::SOFT_RIGHT_45,
@@ -228,6 +234,8 @@ impl ConversationLoop {
             soul_text,
             is_first_run,
             wake_word,
+            skills,
+            current_mode: String::from("DESKTOP"),
         }
     }
 
@@ -253,7 +261,9 @@ impl ConversationLoop {
 
         match WakeWordDetector::start(config) {
             Ok(detector) => {
-                info!("WakeWordDetector: listening for wake word (placeholder: 'Hey Jarvis' model)");
+                info!(
+                    "WakeWordDetector: listening for wake word (placeholder: 'Hey Jarvis' model)"
+                );
                 Some(detector)
             }
             Err(e) => {
@@ -390,31 +400,52 @@ impl ConversationLoop {
     pub async fn process_turn_with_callback(
         &mut self,
         user_text: &str,
-        mut on_token: Option<&mut dyn FnMut(&str)>,
+        on_token: Option<&mut dyn FnMut(&str)>,
     ) -> anyhow::Result<Turn> {
         let start = Instant::now();
         let timestamp = chrono::Utc::now();
 
         // Push user text into transcript buffer for entity lookup.
-        self.transcript_buffer.push(user_text, aether_buffer::TranscriptSource::User);
+        self.transcript_buffer
+            .push(user_text, aether_buffer::TranscriptSource::User);
 
         // Step 1: Classify intent.
         let intent = self.router.classify(user_text).await;
 
-        // Step 2: Dispatch based on intent.
-        let response = match intent {
-            Intent::Conversation => self.handle_conversation(user_text, on_token).await,
-            Intent::EntityLookup => self.handle_entity_lookup(user_text),
-            Intent::WebFetch => self.handle_web_fetch(user_text).await,
-            Intent::FileSearch => self.handle_file_search(user_text).await,
-            Intent::ExecuteAction => self.handle_execute_action(user_text),
-            Intent::SystemCommand => self.handle_system_command(user_text),
-            Intent::SwitchMode => self.handle_switch_mode(user_text),
-            Intent::Unknown => self.handle_unknown(user_text),
+        // Step 2: Dispatch via skill registry first, then fall back to handlers.
+        // Build a minimal skill context for the registry (file-based skills get
+        // their own TranscriptRingBuffer — only built-in skills like entity_lookup
+        // need shared state, and those are handled by the fallback handlers below).
+        let skill_ctx = std::sync::Arc::new(SkillContext {
+            ollama: OllamaClient::new(None),
+            browser: std::sync::Arc::new(None),
+            transcript_buffer: std::sync::Arc::new(TranscriptRingBuffer::new()),
+            file_search: tokio::sync::Mutex::new(FileSearchClient::new(Some(
+                self.config.file_search_socket.clone(),
+            ))),
+        });
+
+        let response = if let Some(skill_response) =
+            self.skills.dispatch(&intent, user_text, skill_ctx).await
+        {
+            skill_response
+        } else {
+            // Fall back to existing handlers.
+            match intent {
+                Intent::Conversation => self.handle_conversation(user_text, on_token).await,
+                Intent::EntityLookup => self.handle_entity_lookup(user_text),
+                Intent::WebFetch => self.handle_web_fetch(user_text).await,
+                Intent::FileSearch => self.handle_file_search(user_text).await,
+                Intent::ExecuteAction => self.handle_execute_action(user_text),
+                Intent::SystemCommand => self.handle_system_command(user_text),
+                Intent::SwitchMode => self.handle_switch_mode(user_text),
+                Intent::Unknown => self.handle_unknown(user_text),
+            }
         };
 
         // Push system response into transcript buffer.
-        self.transcript_buffer.push(&response, aether_buffer::TranscriptSource::System);
+        self.transcript_buffer
+            .push(&response, aether_buffer::TranscriptSource::System);
 
         let turn_ms = start.elapsed().as_millis() as u64;
 
@@ -430,7 +461,10 @@ impl ConversationLoop {
         let event = SystemEvent::new(
             EventCategory::MessageNotification,
             EventSeverity::Normal,
-            format!("User said: {}", user_text.chars().take(40).collect::<String>()),
+            format!(
+                "User said: {}",
+                user_text.chars().take(40).collect::<String>()
+            ),
         );
         let decision = self.attention_evaluator.evaluate(&event);
         match decision {
@@ -511,7 +545,8 @@ impl ConversationLoop {
                             r.location_context,
                         ));
                     }
-                    rag_context.push_str("\nUse this context if relevant to the user's question.\n");
+                    rag_context
+                        .push_str("\nUse this context if relevant to the user's question.\n");
                     messages.push(("system".to_string(), rag_context));
                 }
                 _ => {}
@@ -556,13 +591,13 @@ impl ConversationLoop {
     async fn handle_conversation(
         &mut self,
         user_text: &str,
-        mut on_token: Option<&mut dyn FnMut(&str)>,
+        on_token: Option<&mut dyn FnMut(&str)>,
     ) -> String {
         let owned = self.build_messages(user_text).await;
         let messages = Self::as_ref_messages(&owned);
 
         // Plain chat call — streamed when a callback is given.
-        let result = if let Some(cb) = on_token.as_deref_mut() {
+        let result = if let Some(cb) = on_token {
             self.ollama
                 .chat_stream(&OllamaModel::REASONING, &messages, 0.7, 512, cb)
                 .await
@@ -580,68 +615,6 @@ impl ConversationLoop {
             }
         }
     }
-
-    /// Fallback path: classify via the label router, then dispatch. Used when
-    /// single-pass tool-calling fails or returns empty.
-    ///
-    /// NOTE: Disabled (commented out) — leftover from the single-pass
-    /// tool-calling experiment (commit 7aa7168). The live path is
-    /// `process_turn_with_callback` → `handle_conversation` → `chat_stream`.
-    // async fn fallback_router(&mut self, user_text: &str) -> String {
-    //     let intent = self.router.classify(user_text).await;
-    //     match intent {
-    //         Intent::Conversation => {
-    //             // Try a plain (non-tool) chat call; template on failure.
-    //             let owned = self.build_messages(user_text).await;
-    //             let messages = Self::as_ref_messages(&owned);
-    //             match self
-    //                 .ollama
-    //                 .chat_with_messages(&OllamaModel::REASONING, &messages, 0.7, 512)
-    //                 .await
-    //             {
-    //                 Ok(response) if !response.trim().is_empty() => response,
-    //                 _ => self.template_conversation(user_text),
-    //             }
-    //         }
-    //         Intent::EntityLookup => self.handle_entity_lookup(user_text),
-    //         Intent::WebFetch => self.handle_web_fetch(user_text).await,
-    //         Intent::FileSearch => self.handle_file_search(user_text).await,
-    //         Intent::ExecuteAction => self.handle_execute_action(user_text),
-    //         Intent::SystemCommand => self.handle_system_command(user_text),
-    //         Intent::SwitchMode => self.handle_switch_mode(user_text),
-    //         Intent::Unknown => self.handle_unknown(user_text),
-    //     }
-    // }
-
-    /// Stream a conversational response, invoking `on_token` for each text
-    /// chunk as it arrives. Returns the full response.
-    ///
-    /// This is the perceived-latency win: the caller feeds tokens to TTS as
-    /// they stream in instead of waiting for the whole response.
-    ///
-    /// NOTE: Disabled (commented out) — superseded by
-    /// `process_turn_with_callback`, which threads tokens through the full
-    /// classify-then-dispatch pipeline. Kept for reference.
-    // pub async fn stream_conversation(
-    //     &mut self,
-    //     user_text: &str,
-    //     mut on_token: impl FnMut(&str),
-    // ) -> String {
-    //     let owned = self.build_messages(user_text).await;
-    //     let messages = Self::as_ref_messages(&owned);
-    //     match self
-    //         .ollama
-    //         .chat_stream(&OllamaModel::REASONING, &messages, 0.7, 512, &mut on_token)
-    //         .await
-    //     {
-    //         Ok(response) if !response.trim().is_empty() => response,
-    //         _ => {
-    //             let fallback = self.template_conversation(user_text);
-    //             on_token(&fallback);
-    //             fallback
-    //         }
-    //     }
-    // }
 
     fn handle_entity_lookup(&mut self, user_text: &str) -> String {
         let resolver = ContextResolver::new(&self.transcript_buffer);
@@ -749,11 +722,17 @@ impl ConversationLoop {
                                     } else {
                                         formatted.clone()
                                     };
-                                    format!("Here's what I found on \"{}\": {}", content.title, preview)
+                                    format!(
+                                        "Here's what I found on \"{}\": {}",
+                                        content.title, preview
+                                    )
                                 }
                             }
                         } else {
-                            format!("Here's what I found on \"{}\": {}", content.title, formatted)
+                            format!(
+                                "Here's what I found on \"{}\": {}",
+                                content.title, formatted
+                            )
                         }
                     }
                     Err(e) => {
@@ -786,10 +765,8 @@ impl ConversationLoop {
                             top.spoken_summary,
                         );
                         if results.len() > 1 {
-                            let others: Vec<&str> = results[1..]
-                                .iter()
-                                .map(|r| r.filename.as_str())
-                                .collect();
+                            let others: Vec<&str> =
+                                results[1..].iter().map(|r| r.filename.as_str()).collect();
                             response.push_str(&format!("Also found: {}.", others.join(", ")));
                         }
                         response
@@ -797,7 +774,8 @@ impl ConversationLoop {
                 }
                 Err(e) => {
                     warn!("FileSearch: query failed: {e}");
-                    "I had trouble searching your files. The file index daemon may not be running.".to_string()
+                    "I had trouble searching your files. The file index daemon may not be running."
+                        .to_string()
                 }
             }
         } else {
@@ -806,16 +784,142 @@ impl ConversationLoop {
     }
 
     fn handle_execute_action(&mut self, user_text: &str) -> String {
+        let lower = user_text.to_lowercase();
+
+        // Open / launch app
+        if lower.starts_with("open ") || lower.starts_with("launch ") || lower.starts_with("start ")
+        {
+            let app = user_text
+                .trim_start_matches("open ")
+                .trim_start_matches("launch ")
+                .trim_start_matches("start ")
+                .trim();
+            if !app.is_empty() {
+                match std::process::Command::new("which").arg(app).output() {
+                    Ok(out) if out.status.success() => {
+                        let _ = std::process::Command::new(app).spawn();
+                        return format!("Launching {}.", app);
+                    }
+                    _ => return format!("I couldn't find an application called '{}'.", app),
+                }
+            }
+            return "Which app would you like to open? Say 'open' followed by the app name."
+                .to_string();
+        }
+
+        // Run command (terminal-like)
+        if lower.starts_with("run ") || lower.starts_with("execute ") {
+            let cmd = user_text
+                .trim_start_matches("run ")
+                .trim_start_matches("execute ")
+                .trim();
+            if !cmd.is_empty() {
+                let output = std::process::Command::new("sh").arg("-c").arg(cmd).output();
+                return match output {
+                    Ok(o) => {
+                        let stdout = String::from_utf8_lossy(&o.stdout);
+                        let stderr = String::from_utf8_lossy(&o.stderr);
+                        if o.status.success() {
+                            let out = stdout.trim();
+                            if out.is_empty() {
+                                "Command completed with no output.".to_string()
+                            } else if out.len() > 300 {
+                                format!("Output: {}", &out[..300])
+                            } else {
+                                format!("Output: {}", out)
+                            }
+                        } else {
+                            let err = stderr.trim();
+                            if err.is_empty() {
+                                "Command failed with no error output.".to_string()
+                            } else {
+                                format!("Error: {}", &err[..err.len().min(200)])
+                            }
+                        }
+                    }
+                    Err(e) => format!("Could not run command: {}", e),
+                };
+            }
+            return "Which command? Say 'run' followed by the command.".to_string();
+        }
+
+        // Copy file
+        if lower.starts_with("copy ") {
+            let parts: Vec<&str> = user_text
+                .trim_start_matches("copy ")
+                .splitn(2, " to ")
+                .collect();
+            if parts.len() == 2 {
+                let output = std::process::Command::new("cp")
+                    .arg("-r")
+                    .arg(parts[0].trim())
+                    .arg(parts[1].trim())
+                    .output();
+                return match output {
+                    Ok(o) if o.status.success() => {
+                        format!("Copied {} to {}.", parts[0].trim(), parts[1].trim())
+                    }
+                    _ => "Copy failed.".to_string(),
+                };
+            }
+            return "Say 'copy [file] to [destination]'.".to_string();
+        }
+
+        // Move file
+        if lower.starts_with("move ") {
+            let parts: Vec<&str> = user_text
+                .trim_start_matches("move ")
+                .splitn(2, " to ")
+                .collect();
+            if parts.len() == 2 {
+                let output = std::process::Command::new("mv")
+                    .arg(parts[0].trim())
+                    .arg(parts[1].trim())
+                    .output();
+                return match output {
+                    Ok(o) if o.status.success() => {
+                        format!("Moved {} to {}.", parts[0].trim(), parts[1].trim())
+                    }
+                    _ => "Move failed.".to_string(),
+                };
+            }
+            return "Say 'move [file] to [destination]'.".to_string();
+        }
+
+        // Delete file (with confirmation hint)
+        if lower.starts_with("delete ") || lower.starts_with("remove ") || lower.starts_with("rm ")
+        {
+            let file = user_text
+                .trim_start_matches("delete ")
+                .trim_start_matches("remove ")
+                .trim_start_matches("rm ")
+                .trim();
+            if !file.is_empty() {
+                let output = std::process::Command::new("rm")
+                    .arg("-rf")
+                    .arg(file)
+                    .output();
+                return match output {
+                    Ok(o) if o.status.success() => format!("Deleted {}.", file),
+                    _ => format!("Failed to delete {}.", file),
+                };
+            }
+            return "Which file? Say 'delete' followed by the file name.".to_string();
+        }
+
+        // Fallback
         format!(
-            "I understand you want to perform an action: \"{}\". \
-             This capability is being wired up.",
+            "I heard: \"{}\". I can open apps, run commands, copy, move, or delete files. Try 'open firefox' or 'run ls'.",
             user_text.chars().take(60).collect::<String>()
         )
     }
 
     fn handle_system_command(&mut self, user_text: &str) -> String {
+        if let Some(response) = crate::system_commands::dispatch(user_text) {
+            return response;
+        }
         format!(
-            "System command: \"{}\". Use 'volume up', 'volume down', 'set volume to 50', 'status', 'timer 10 minutes', 'bluetooth', 'wifi', or 'switch audio to headphones'.",
+            "System command: \"{}\". Try 'volume up', 'volume down', 'set volume to 50', 'status', 'timer 10 minutes', 'bluetooth', 'wifi', or 'switch audio to headphones'.",
             user_text.chars().take(60).collect::<String>()
         )
     }
@@ -823,21 +927,23 @@ impl ConversationLoop {
     fn handle_switch_mode(&mut self, user_text: &str) -> String {
         let lower = user_text.to_lowercase();
         let modes = [
-            ("browser", "browser"),
-            ("email", "email"),
+            ("browser", "BROWSER"),
+            ("email", "EMAIL"),
             ("ide", "IDE"),
-            ("files", "files"),
-            ("docs", "documents"),
-            ("settings", "settings"),
-            ("ebook", "ebook reader"),
-            ("desktop", "desktop"),
+            ("files", "FILES"),
+            ("docs", "DOCUMENTS"),
+            ("settings", "SETTINGS"),
+            ("ebook", "EBOOK READER"),
+            ("desktop", "DESKTOP"),
         ];
         for (keyword, label) in modes {
             if lower.contains(keyword) {
-                return format!("Switching to {} mode.", label);
+                self.current_mode = label.to_string();
+                return format!("Switching to {} mode.", label.to_lowercase());
             }
         }
-        "I can switch to browser, email, IDE, files, documents, settings, or ebook mode.".to_string()
+        "I can switch to browser, email, IDE, files, documents, settings, or ebook mode."
+            .to_string()
     }
 
     fn handle_unknown(&mut self, _user_text: &str) -> String {
@@ -874,10 +980,16 @@ impl ConversationLoop {
     fn extract_url(&self, text: &str) -> Option<String> {
         for word in text.split_whitespace() {
             if word.starts_with("http://") || word.starts_with("https://") {
-                return Some(word.trim_end_matches(&['.', ',', ';', '!', '?'][..]).to_string());
+                return Some(
+                    word.trim_end_matches(&['.', ',', ';', '!', '?'][..])
+                        .to_string(),
+                );
             }
             if word.starts_with("www.") {
-                return Some(format!("https://{}", word.trim_end_matches(&['.', ',', ';', '!', '?'][..])));
+                return Some(format!(
+                    "https://{}",
+                    word.trim_end_matches(&['.', ',', ';', '!', '?'][..])
+                ));
             }
         }
         None
@@ -932,7 +1044,9 @@ impl ConversationLoop {
     #[cfg(feature = "tts")]
     pub fn synthesize_speech(&mut self, text: &str) -> anyhow::Result<Vec<f32>> {
         if self.tts.is_loaded() {
-            self.tts.synthesize(text).map_err(|e| anyhow::anyhow!("TTS failed: {}", e))
+            self.tts
+                .synthesize(text)
+                .map_err(|e| anyhow::anyhow!("TTS failed: {}", e))
         } else {
             Err(anyhow::anyhow!("TTS engine not loaded"))
         }
@@ -943,7 +1057,9 @@ impl ConversationLoop {
     #[cfg(feature = "stt")]
     pub fn transcribe_audio(&mut self, samples: &[f32]) -> anyhow::Result<String> {
         if self.stt.is_loaded() {
-            self.stt.transcribe(samples).map_err(|e| anyhow::anyhow!("STT failed: {}", e))
+            self.stt
+                .transcribe(samples)
+                .map_err(|e| anyhow::anyhow!("STT failed: {}", e))
         } else {
             Err(anyhow::anyhow!("STT engine not loaded"))
         }
@@ -977,7 +1093,10 @@ mod tests {
     async fn test_process_entity_lookup_turn() {
         let mut loop_ = ConversationLoop::new(ConversationConfig::default());
         loop_.load_all().ok();
-        let turn = loop_.process_turn("Copy that tracking number").await.unwrap();
+        let turn = loop_
+            .process_turn("Copy that tracking number")
+            .await
+            .unwrap();
         assert!(!turn.response.is_empty());
     }
 
@@ -985,7 +1104,10 @@ mod tests {
     async fn test_process_web_fetch_turn() {
         let mut loop_ = ConversationLoop::new(ConversationConfig::default());
         loop_.load_all().ok();
-        let turn = loop_.process_turn("Read me https://example.com").await.unwrap();
+        let turn = loop_
+            .process_turn("Read me https://example.com")
+            .await
+            .unwrap();
         assert!(!turn.response.is_empty());
     }
 

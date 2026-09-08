@@ -12,26 +12,27 @@
 //!   └── ExecuteAction → [system call] → confirm
 //! ```
 
-pub mod ollama;
-pub mod router;
-#[cfg(feature = "stt")]
-pub mod stt;
-#[cfg(feature = "tts")]
-pub mod tts;
 pub mod conversation;
 pub mod file_search;
+pub mod ollama;
 pub mod profile;
+pub mod router;
 pub mod skills;
+#[cfg(feature = "stt")]
+pub mod stt;
+pub mod system_commands;
+#[cfg(feature = "tts")]
+pub mod tts;
 #[cfg(feature = "tts")]
 pub mod tts_service;
 #[cfg(feature = "tts")]
-pub use tts_service::{TtsService, StreamingTts};
+pub use tts_service::{StreamingTts, TtsService};
 
+pub use conversation::{ConversationConfig, ConversationLoop, Turn};
+pub use file_search::FileSearchClient;
 pub use ollama::{OllamaClient, OllamaModel};
 pub use router::{Intent, IntentRouter, RouterConfig};
 #[cfg(feature = "stt")]
-pub use stt::{SttEngine, SttConfig};
+pub use stt::{SttConfig, SttEngine};
 #[cfg(feature = "tts")]
-pub use tts::{TtsEngine, TtsConfig};
-pub use conversation::{ConversationLoop, ConversationConfig, Turn};
-pub use file_search::FileSearchClient;
+pub use tts::{TtsConfig, TtsEngine};

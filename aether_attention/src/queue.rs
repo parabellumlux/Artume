@@ -4,8 +4,8 @@
 //! periods. When the user returns to `Idle`, `batch_summarize()` generates
 //! a concise spoken overview of all missed notifications.
 
+use crate::evaluator::CognitiveLoadEvaluator;
 use crate::event::SystemEvent;
-use crate::evaluator::{CognitiveLoadEvaluator, DeliveryDecision};
 use log::{debug, info, warn};
 use std::collections::VecDeque;
 
@@ -154,8 +154,8 @@ impl PendingNotificationQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::*;
     use crate::evaluator::*;
+    use crate::event::*;
 
     /// Test basic enqueue and drain.
     #[test]

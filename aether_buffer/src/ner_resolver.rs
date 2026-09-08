@@ -9,7 +9,7 @@
 //! current timestamp.
 
 use crate::ring_buffer::{TaggedEntity, TranscriptRingBuffer};
-use log::{debug, info, warn};
+use log::debug;
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -27,14 +27,12 @@ static PHONE_RE: LazyLock<Regex> = LazyLock::new(|| {
 
 /// Email address pattern.
 static EMAIL_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
-        .expect("EMAIL_RE")
+    Regex::new(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}").expect("EMAIL_RE")
 });
 
 /// URL pattern.
-static URL_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"https?://[^\s,;)]+").expect("URL_RE")
-});
+static URL_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"https?://[^\s,;)]+").expect("URL_RE"));
 
 /// US street address pattern (simplified).
 static ADDRESS_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -53,16 +51,13 @@ static DATE_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// Financial amount pattern.
-static AMOUNT_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\$\d{1,3}(?:,\d{3})*(?:\.\d{2})?").expect("AMOUNT_RE")
-});
+static AMOUNT_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\$\d{1,3}(?:,\d{3})*(?:\.\d{2})?").expect("AMOUNT_RE"));
 
 /// Tracking number pattern (UPS, FedEx, USPS).
 static TRACKING_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"(?:\b1Z\w{16}\b)|(?:\b\d{12,15}\b)|(?:[A-Z]{2}\d{9,10}(?:US)?\b)"
-    )
-    .expect("TRACKING_RE")
+    Regex::new(r"(?:\b1Z\w{16}\b)|(?:\b\d{12,15}\b)|(?:[A-Z]{2}\d{9,10}(?:US)?\b)")
+        .expect("TRACKING_RE")
 });
 
 // ---------------------------------------------------------------------------
@@ -235,15 +230,10 @@ impl<'a> ContextResolver<'a> {
             || query.contains("digits")
         {
             Some(ENTITY_PHONE.to_string())
-        } else if query.contains("address")
-            || query.contains("place")
-            || query.contains("location")
+        } else if query.contains("address") || query.contains("place") || query.contains("location")
         {
             Some(ENTITY_ADDRESS.to_string())
-        } else if query.contains("email")
-            || query.contains("e-mail")
-            || query.contains("mail")
-        {
+        } else if query.contains("email") || query.contains("e-mail") || query.contains("mail") {
             Some(ENTITY_EMAIL.to_string())
         } else if query.contains("url")
             || query.contains("link")
@@ -251,10 +241,7 @@ impl<'a> ContextResolver<'a> {
             || query.contains("site")
         {
             Some(ENTITY_URL.to_string())
-        } else if query.contains("date")
-            || query.contains("time")
-            || query.contains("when")
-        {
+        } else if query.contains("date") || query.contains("time") || query.contains("when") {
             Some(ENTITY_DATE.to_string())
         } else if query.contains("amount")
             || query.contains("price")
@@ -302,7 +289,8 @@ mod tests {
     /// Test NER extraction of addresses.
     #[test]
     fn test_extract_address() {
-        let entities = NerEngine::extract_entities("Ship to 123 Main Street, Springfield, IL 62701");
+        let entities =
+            NerEngine::extract_entities("Ship to 123 Main Street, Springfield, IL 62701");
         assert!(entities.iter().any(|e| e.entity_type == ENTITY_ADDRESS));
     }
 
@@ -323,7 +311,8 @@ mod tests {
     /// Test NER extraction of tracking numbers.
     #[test]
     fn test_extract_tracking() {
-        let entities = NerEngine::extract_entities("Your UPS tracking number is 1Z999AA10123456784");
+        let entities =
+            NerEngine::extract_entities("Your UPS tracking number is 1Z999AA10123456784");
         assert!(entities.iter().any(|e| e.entity_type == ENTITY_TRACKING));
     }
 
@@ -343,11 +332,7 @@ mod tests {
             TranscriptSource::System,
             NerEngine::extract_entities("Your tracking number is 1Z999AA10123456784"),
         );
-        buffer.push_with_entities(
-            "Thanks for the update",
-            TranscriptSource::User,
-            vec![],
-        );
+        buffer.push_with_entities("Thanks for the update", TranscriptSource::User, vec![]);
 
         let resolver = ContextResolver::new(&buffer);
         let result = resolver.resolve_reference("Copy that tracking number");

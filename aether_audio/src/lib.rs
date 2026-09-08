@@ -7,13 +7,11 @@
 //! - **Context Stack** — Thread-safe LIFO stack for managing audio stream
 //!   interruptions with gain ducking and smooth cross-fade restoration.
 
-pub mod spatial_mixer;
-pub mod context_stack;
-pub mod wake_word;
-pub mod output;
 pub mod capture;
+pub mod context_stack;
+pub mod output;
+pub mod spatial_mixer;
+pub mod wake_word;
 
-pub use spatial_mixer::{
-    AudioError, BinauralKernel, SpatialMixer, SpatialPosition, VirtualSource,
-};
 pub use context_stack::{AudioContext, ContextStack};
+pub use spatial_mixer::{AudioError, BinauralKernel, SpatialMixer, SpatialPosition, VirtualSource};

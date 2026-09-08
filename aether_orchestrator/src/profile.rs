@@ -25,8 +25,9 @@ pub fn profile_dir() -> PathBuf {
     // Use XDG config dir (Linux: ~/.config, macOS: ~/Library/Application Support)
     // Falls back to ~/.config if XDG_CONFIG_HOME is unset
     let base = dirs::config_dir().unwrap_or_else(|| {
-        let home = dirs::home_dir().expect("HOME must be set to use Artume");
-        home.join(".config")
+        dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("/tmp"))
+            .join(".config")
     });
     base.join("artume").join("profile")
 }
@@ -89,7 +90,7 @@ impl Default for UserPreferences {
 }
 
 /// Daily routines — recurring patterns Artume can learn.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct UserRoutines {
     /// Morning routine description (e.g. "check weather, then news").
     pub morning: Option<String>,
@@ -99,17 +100,6 @@ pub struct UserRoutines {
     pub workday: Option<String>,
     /// Weekend patterns.
     pub weekend: Option<String>,
-}
-
-impl Default for UserRoutines {
-    fn default() -> Self {
-        Self {
-            morning: None,
-            evening: None,
-            workday: None,
-            weekend: None,
-        }
-    }
 }
 
 /// Current context — updated in real-time during a session.
@@ -137,7 +127,7 @@ impl Default for UserContext {
 }
 
 /// Learned patterns — system-written observations over time.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct UserHistory {
     /// Patterns Artume has noticed (e.g. "user prefers short summaries before 9am").
     pub patterns: Vec<String>,
@@ -147,36 +137,14 @@ pub struct UserHistory {
     pub frequent_commands: Vec<String>,
 }
 
-impl Default for UserHistory {
-    fn default() -> Self {
-        Self {
-            patterns: Vec::new(),
-            frequent_topics: Vec::new(),
-            frequent_commands: Vec::new(),
-        }
-    }
-}
-
 /// The complete user profile.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct UserProfile {
     pub identity: UserIdentity,
     pub preferences: UserPreferences,
     pub routines: UserRoutines,
     pub context: UserContext,
     pub history: UserHistory,
-}
-
-impl Default for UserProfile {
-    fn default() -> Self {
-        Self {
-            identity: UserIdentity::default(),
-            preferences: UserPreferences::default(),
-            routines: UserRoutines::default(),
-            context: UserContext::default(),
-            history: UserHistory::default(),
-        }
-    }
 }
 
 impl UserProfile {

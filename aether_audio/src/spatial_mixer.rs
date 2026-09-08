@@ -12,9 +12,7 @@
 //! Difference) and IID (Interaural Intensity Difference) to produce a
 //! convincing binaural image over stereo headphones.
 
-use dasp::signal::{self, Signal};
-use dasp::Sample;
-use log::{debug, info, warn};
+use log::info;
 use pipewire as pw;
 use std::f32::consts::PI;
 
@@ -32,7 +30,8 @@ const HEAD_RADIUS: f32 = 0.0875;
 const SAMPLE_RATE: f32 = 48_000.0;
 
 /// Maximum interaural time delay in samples (90° azimuth).
-const MAX_ITD_SAMPLES: usize = ((HEAD_RADIUS * (PI / 2.0 + 1.0)) / SPEED_OF_SOUND * SAMPLE_RATE) as usize;
+const MAX_ITD_SAMPLES: usize =
+    ((HEAD_RADIUS * (PI / 2.0 + 1.0)) / SPEED_OF_SOUND * SAMPLE_RATE) as usize;
 
 // ---------------------------------------------------------------------------
 // Spatial position
@@ -171,7 +170,7 @@ impl BinauralKernel {
         let int_delay = delay as usize;
         let frac = delay - int_delay as f32;
 
-        let read_ptr = if write_ptr >= int_delay + 1 {
+        let read_ptr = if write_ptr > int_delay {
             write_ptr - int_delay - 1
         } else {
             delay_line.len() - (int_delay + 1 - write_ptr)
@@ -252,13 +251,17 @@ impl VirtualSource {
     /// milliseconds.
     pub fn set_gain_crossfade(&mut self, target: f32, duration_ms: u32) {
         self.target_gain = target.clamp(0.0, 1.0);
-        self.fade_samples_remaining =
-            ((duration_ms as f32 / 1000.0) * SAMPLE_RATE) as usize;
+        self.fade_samples_remaining = ((duration_ms as f32 / 1000.0) * SAMPLE_RATE) as usize;
     }
 
     /// Process one sample of audio through the spatialiser.
     /// Returns `(left, right)`.
-    pub fn process_sample(&mut self, input: f32, delay_line: &[f32; MAX_ITD_SAMPLES + 4], write_ptr: usize) -> (f32, f32) {
+    pub fn process_sample(
+        &mut self,
+        input: f32,
+        delay_line: &[f32; MAX_ITD_SAMPLES + 4],
+        write_ptr: usize,
+    ) -> (f32, f32) {
         // Exponential cross-fade toward target gain.
         if self.fade_samples_remaining > 0 {
             // Exponential approach: ~63% of the way per time constant.
@@ -268,7 +271,9 @@ impl VirtualSource {
             self.fade_samples_remaining -= 1;
         }
 
-        let (left, right) = self.kernel.process(input, delay_line, write_ptr, &mut self.contra_state);
+        let (left, right) =
+            self.kernel
+                .process(input, delay_line, write_ptr, &mut self.contra_state);
         (left * self.gain, right * self.gain)
     }
 }
@@ -289,6 +294,12 @@ pub struct SpatialMixer {
     delay_line: [f32; MAX_ITD_SAMPLES + 4],
     /// Current write position in the delay line.
     delay_write_ptr: usize,
+}
+
+impl Default for SpatialMixer {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SpatialMixer {
@@ -372,7 +383,7 @@ impl SpatialMixer {
             .map_err(|e| AudioError::PipeWireInit(format!("MainLoop: {e}")))?;
         let context = pw::context::ContextBox::new(mainloop.loop_(), None)
             .map_err(|e| AudioError::PipeWireInit(format!("Context: {e}")))?;
-        let core = context
+        let _core = context
             .connect(None)
             .map_err(|e| AudioError::PipeWireInit(format!("Core connect: {e}")))?;
 
@@ -479,7 +490,10 @@ mod tests {
     fn test_spatial_mixer_add_remove_source() {
         let mut mixer = SpatialMixer::new();
         mixer.add_source(VirtualSource::new("Primary Voice", SpatialPosition::CENTRE));
-        mixer.add_source(VirtualSource::new("System Alert", SpatialPosition::SOFT_RIGHT_45));
+        mixer.add_source(VirtualSource::new(
+            "System Alert",
+            SpatialPosition::SOFT_RIGHT_45,
+        ));
         assert_eq!(mixer.sources.len(), 2);
 
         mixer.remove_source("System Alert");
@@ -491,7 +505,10 @@ mod tests {
     fn test_spatial_mixer_process_frame() {
         let mut mixer = SpatialMixer::new();
         mixer.add_source(VirtualSource::new("Primary Voice", SpatialPosition::CENTRE));
-        mixer.add_source(VirtualSource::new("System Alert", SpatialPosition::SOFT_RIGHT_45));
+        mixer.add_source(VirtualSource::new(
+            "System Alert",
+            SpatialPosition::SOFT_RIGHT_45,
+        ));
 
         // Process a few frames — should not panic or produce NaN.
         for i in 0..100 {

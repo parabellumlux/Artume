@@ -15,10 +15,9 @@ use aether_buffer::{ContextResolver, TranscriptRingBuffer};
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 
 // ---------------------------------------------------------------------------
 // Skill trait
@@ -50,9 +49,9 @@ pub trait Skill: Send + Sync {
 /// Context passed to every skill execution.
 pub struct SkillContext {
     pub ollama: OllamaClient,
-    pub browser: BrowserEngine,
-    pub transcript_buffer: TranscriptRingBuffer,
-    pub file_search: Mutex<FileSearchClient>,
+    pub browser: std::sync::Arc<Option<BrowserEngine>>,
+    pub transcript_buffer: std::sync::Arc<TranscriptRingBuffer>,
+    pub file_search: tokio::sync::Mutex<FileSearchClient>,
 }
 
 // ---------------------------------------------------------------------------
@@ -97,6 +96,12 @@ struct FileSkill {
     manifest: SkillManifest,
     /// Resolved directory path for script execution.
     dir: PathBuf,
+}
+
+impl Default for SkillRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SkillRegistry {
@@ -180,20 +185,21 @@ impl SkillRegistry {
     }
 
     /// Load a single skill from a directory with a manifest.
-    fn load_skill(&self, dir: &PathBuf, manifest_path: &PathBuf) -> anyhow::Result<FileSkill> {
+    fn load_skill(&self, dir: &Path, manifest_path: &PathBuf) -> anyhow::Result<FileSkill> {
         let content = std::fs::read_to_string(manifest_path)?;
         let manifest: SkillManifest = toml::from_str(&content)?;
         Ok(FileSkill {
             manifest,
-            dir: dir.clone(),
+            dir: dir.to_path_buf(),
         })
     }
 
     /// Get skills directory path (XDG config dir).
     fn skills_dir(&self) -> PathBuf {
         let base = dirs::config_dir().unwrap_or_else(|| {
-            let home = dirs::home_dir().expect("HOME must be set");
-            home.join(".config")
+            dirs::home_dir()
+                .unwrap_or_else(|| PathBuf::from("/tmp"))
+                .join(".config")
         });
         base.join("artume").join("skills")
     }
@@ -222,11 +228,7 @@ impl SkillRegistry {
     }
 
     /// Execute a file-based skill by name.
-    pub async fn execute_file_skill(
-        &self,
-        name: &str,
-        user_text: &str,
-    ) -> Option<String> {
+    pub async fn execute_file_skill(&self, name: &str, user_text: &str) -> Option<String> {
         for skill in &self.file_skills {
             if skill.manifest.skill.name == name {
                 return self.run_file_skill(skill, user_text).await;
@@ -261,13 +263,30 @@ impl SkillRegistry {
             }
         }
 
-        // If a prompt template is specified, use LLM
+        // If a prompt template is specified, use LLM via Ollama
         if let Some(template) = &meta.prompt_template {
-            let _prompt = template.replace("{input}", user_text);
-            return Some(format!(
-                "[Skill '{}' would process: {}]",
-                meta.name, user_text
-            ));
+            let prompt = template.replace("{input}", user_text);
+            let ollama = OllamaClient::new(None);
+            match ollama
+                .chat(
+                    &crate::ollama::OllamaModel::REASONING,
+                    &prompt,
+                    None,
+                    0.3,
+                    512,
+                )
+                .await
+            {
+                Ok(response) if !response.trim().is_empty() => {
+                    return Some(response.trim().to_string());
+                }
+                Ok(_) => {
+                    warn!("Skill '{}': LLM returned empty response", meta.name);
+                }
+                Err(e) => {
+                    warn!("Skill '{}': LLM call failed: {e}", meta.name);
+                }
+            }
         }
 
         None
@@ -281,7 +300,11 @@ impl SkillRegistry {
                 name: skill.name().to_string(),
                 description: skill.description().to_string(),
                 source: "builtin".to_string(),
-                intents: skill.intents().iter().map(|i| i.label().to_string()).collect(),
+                intents: skill
+                    .intents()
+                    .iter()
+                    .map(|i| i.label().to_string())
+                    .collect(),
             });
         }
         for skill in &self.file_skills {
@@ -293,6 +316,50 @@ impl SkillRegistry {
             });
         }
         skills
+    }
+
+    /// Dispatch to the first matching skill (file skills first, then builtin).
+    pub async fn dispatch(
+        &self,
+        intent: &crate::router::Intent,
+        user_text: &str,
+        ctx: Arc<SkillContext>,
+    ) -> Option<String> {
+        // File-based skills first (user-configurable, override builtins).
+        for skill in &self.file_skills {
+            if let Some(intent_label) = self.skill_handles_intent(skill, intent) {
+                if intent_label {
+                    return self.run_file_skill(skill, user_text).await;
+                }
+            }
+        }
+        // Then builtin skills.
+        for skill in &self.builtin {
+            if skill.intents().contains(intent) {
+                return Some(skill.execute(user_text, ctx).await);
+            }
+        }
+        None
+    }
+
+    /// Check if a file skill handles a given intent.
+    fn skill_handles_intent(
+        &self,
+        skill: &FileSkill,
+        intent: &crate::router::Intent,
+    ) -> Option<bool> {
+        let intent_label = intent.label();
+        if skill
+            .manifest
+            .skill
+            .intents
+            .iter()
+            .any(|i| i == intent_label)
+        {
+            Some(true)
+        } else {
+            None
+        }
     }
 }
 
@@ -330,8 +397,12 @@ impl Skill for WebFetchSkill {
             let url = extract_url(&text);
             match url {
                 Some(u) => {
+                    let browser = match ctx.browser.as_ref() {
+                        Some(b) => b,
+                        None => return "Web fetch is not available — browser engine failed to initialise.".to_string(),
+                    };
                     info!("WebFetch: fetching {u}");
-                    match ctx.browser.fetch(&u).await {
+                    match browser.fetch(&u).await {
                         Ok(result) => {
                             let content = ReadabilityExtractor::extract(&result.html);
                             let formatted = ConversationalFormatter::format(&content);
@@ -352,7 +423,10 @@ impl Skill for WebFetchSkill {
                                     .await
                                 {
                                     Ok(summary) => {
-                                        format!("Here's what I found on \"{}\": {}", content.title, summary)
+                                        format!(
+                                            "Here's what I found on \"{}\": {}",
+                                            content.title, summary
+                                        )
                                     }
                                     Err(_) => {
                                         let preview = if formatted.len() > 500 {
@@ -360,11 +434,17 @@ impl Skill for WebFetchSkill {
                                         } else {
                                             formatted.clone()
                                         };
-                                        format!("Here's what I found on \"{}\": {}", content.title, preview)
+                                        format!(
+                                            "Here's what I found on \"{}\": {}",
+                                            content.title, preview
+                                        )
                                     }
                                 }
                             } else {
-                                format!("Here's what I found on \"{}\": {}", content.title, formatted)
+                                format!(
+                                    "Here's what I found on \"{}\": {}",
+                                    content.title, formatted
+                                )
                             }
                         }
                         Err(e) => format!("I couldn't fetch that page: {e}"),
@@ -487,7 +567,7 @@ impl Skill for SystemCommandSkill {
         "system_command"
     }
     fn description(&self) -> &'static str {
-        "Execute system commands (volume, settings, help)"
+        "Execute system commands (volume, bluetooth, wifi, audio, timer, status)"
     }
     fn intents(&self) -> &[crate::router::Intent] {
         &[crate::router::Intent::SystemCommand]
@@ -499,8 +579,11 @@ impl Skill for SystemCommandSkill {
     ) -> Pin<Box<dyn std::future::Future<Output = String> + Send>> {
         let text = user_text.to_string();
         Box::pin(async move {
+            if let Some(response) = crate::system_commands::dispatch(&text) {
+                return response;
+            }
             format!(
-                "System command: \"{}\". Use 'volume up', 'volume down', 'set volume to 50', 'status', 'timer 10 minutes', 'bluetooth', 'wifi', or 'switch audio to headphones'.",
+                "System command: \"{}\". Try 'volume up', 'volume down', 'set volume to 50', 'status', 'timer 10 minutes', 'bluetooth', 'wifi', or 'switch audio to headphones'.",
                 text.chars().take(60).collect::<String>()
             )
         })

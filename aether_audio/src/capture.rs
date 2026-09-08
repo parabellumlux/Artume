@@ -31,7 +31,10 @@ pub fn capture_until_silence(
         .default_input_device()
         .ok_or_else(|| "No input device available".to_string())?;
 
-    let device_name = device.name().unwrap_or_else(|_| "unknown".to_string());
+    let device_name = device
+        .description()
+        .map(|d| d.name().to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
     info!("MicCapture: using input device: {}", device_name);
 
     let config = device
@@ -65,7 +68,7 @@ pub fn capture_until_silence(
         .build_input_stream(
             &stream_config,
             move |data: &[f32], _| {
-                let mut rec = recorded_clone.lock().unwrap();
+                let mut rec = recorded_clone.lock().unwrap_or_else(|e| e.into_inner());
                 // Downmix to mono if needed
                 if stream_channels > 1 {
                     for frame in data.chunks(stream_channels) {
@@ -77,7 +80,7 @@ pub fn capture_until_silence(
                 }
                 // Check if we've hit max duration
                 if rec.len() >= max_samples {
-                    *done_clone.lock().unwrap() = true;
+                    *done_clone.lock().unwrap_or_else(|e| e.into_inner()) = true;
                 }
             },
             err_fn,
@@ -91,13 +94,13 @@ pub fn capture_until_silence(
 
     // Wait for silence or timeout
     let mut silence_frames = 0u64;
-    let silence_samples = (target_rate as f64 * silence_timeout_ms as f64 / 1000.0) as usize;
+    let _silence_samples = (target_rate as f64 * silence_timeout_ms as f64 / 1000.0) as usize;
     let mut last_sample_count = 0usize;
 
     loop {
         std::thread::sleep(Duration::from_millis(50));
 
-        let rec = recorded.lock().unwrap();
+        let rec = recorded.lock().unwrap_or_else(|e| e.into_inner());
         let len = rec.len();
 
         // Check for silence in the latest chunk
@@ -119,7 +122,7 @@ pub fn capture_until_silence(
         }
 
         // Stop if max duration reached
-        if *done.lock().unwrap() {
+        if *done.lock().unwrap_or_else(|e| e.into_inner()) {
             break;
         }
     }
@@ -127,7 +130,7 @@ pub fn capture_until_silence(
     // Drop stream to stop capture
     drop(stream);
 
-    let samples = recorded.lock().unwrap().clone();
+    let samples = recorded.lock().unwrap_or_else(|e| e.into_inner()).clone();
 
     // Resample to 16kHz if needed
     let samples = if sample_rate != target_rate {

@@ -42,11 +42,9 @@ fn main() -> anyhow::Result<()> {
 
     println!("Starting audio output...");
     let audio = if let Some(s) = sink {
-        AudioOutput::with_sink(s)
-            .map_err(|e| anyhow::anyhow!("Audio output failed: {e}"))?
+        AudioOutput::with_sink(s).map_err(|e| anyhow::anyhow!("Audio output failed: {e}"))?
     } else {
-        AudioOutput::with_device(device)
-            .map_err(|e| anyhow::anyhow!("Audio output failed: {e}"))?
+        AudioOutput::with_device(device).map_err(|e| anyhow::anyhow!("Audio output failed: {e}"))?
     };
     println!("Audio output ready.");
 
@@ -54,7 +52,11 @@ fn main() -> anyhow::Result<()> {
     println!("Synthesizing: \"{text}\"");
     let samples = engine.synthesize(text)?;
     let duration_secs = samples.len() as f32 / 24000.0;
-    println!("Synthesized {} samples ({:.1}s), playing...", samples.len(), duration_secs);
+    println!(
+        "Synthesized {} samples ({:.1}s), playing...",
+        samples.len(),
+        duration_secs
+    );
 
     audio.play(samples, 24000);
     std::thread::sleep(Duration::from_secs_f32(duration_secs + 1.0));

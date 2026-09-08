@@ -4,7 +4,7 @@
 //! tokens. Maintains the last 5 minutes of conversation by default.
 
 use chrono::{DateTime, Utc};
-use log::{debug, info, warn};
+use log::debug;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
@@ -67,6 +67,12 @@ pub struct TranscriptRingBuffer {
     total_entries_added: u64,
     /// Total entries evicted (for stats).
     total_entries_evicted: u64,
+}
+
+impl Default for TranscriptRingBuffer {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TranscriptRingBuffer {

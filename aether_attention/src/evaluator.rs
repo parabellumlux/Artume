@@ -5,7 +5,7 @@
 //! drop the notification.
 
 use crate::event::{EventSeverity, SystemEvent};
-use log::{debug, info, warn};
+use log::{debug, info};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -104,6 +104,12 @@ pub struct CognitiveLoadEvaluator {
     events_queued: u64,
     /// Number of events dropped.
     events_dropped: u64,
+}
+
+impl Default for CognitiveLoadEvaluator {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl CognitiveLoadEvaluator {
@@ -323,7 +329,11 @@ mod tests {
 
         let ev1 = SystemEvent::new(EventCategory::Email, EventSeverity::Normal, "email");
         let ev2 = SystemEvent::new(EventCategory::SystemAlert, EventSeverity::Critical, "alert");
-        let ev3 = SystemEvent::new(EventCategory::BackgroundTaskCompletion, EventSeverity::Trivial, "trivial");
+        let ev3 = SystemEvent::new(
+            EventCategory::BackgroundTaskCompletion,
+            EventSeverity::Trivial,
+            "trivial",
+        );
 
         evaluator.evaluate(&ev1); // queue
         evaluator.evaluate(&ev2); // deliver

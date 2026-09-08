@@ -13,8 +13,8 @@ use tonic::transport::{Channel, Endpoint};
 use tower::service_fn;
 
 use aetherfs_proto::aetherfs::aether_engine_client::AetherEngineClient;
-use aetherfs_proto::aetherfs::VoiceSearchRequest;
 use aetherfs_proto::aetherfs::IndexConversationRequest;
+use aetherfs_proto::aetherfs::VoiceSearchRequest;
 
 /// Client for querying the AetherFS file index daemon.
 pub struct FileSearchClient {
@@ -58,16 +58,15 @@ impl FileSearchClient {
     ///
     /// Returns up to `limit` results matching the query text.
     pub async fn search(&mut self, query: &str, limit: usize) -> Result<Vec<FileSearchResult>> {
-        let client = self
-            .client
-            .as_mut()
-            .ok_or_else(|| anyhow::anyhow!("FileSearchClient not connected — call connect() first"))?;
+        let client = self.client.as_mut().ok_or_else(|| {
+            anyhow::anyhow!("FileSearchClient not connected — call connect() first")
+        })?;
 
         let req = VoiceSearchRequest {
             session_id: uuid::Uuid::new_v4().to_string(),
-            input: Some(aetherfs_proto::aetherfs::voice_search_request::Input::TextQuery(
-                query.to_string(),
-            )),
+            input: Some(
+                aetherfs_proto::aetherfs::voice_search_request::Input::TextQuery(query.to_string()),
+            ),
             path_scope: String::new(),
         };
 
@@ -113,10 +112,9 @@ impl FileSearchClient {
         assistant_response: &str,
         intent: &str,
     ) -> Result<()> {
-        let client = self
-            .client
-            .as_mut()
-            .ok_or_else(|| anyhow::anyhow!("FileSearchClient not connected — call connect() first"))?;
+        let client = self.client.as_mut().ok_or_else(|| {
+            anyhow::anyhow!("FileSearchClient not connected — call connect() first")
+        })?;
 
         let req = IndexConversationRequest {
             session_id: session_id.to_string(),
@@ -136,10 +134,8 @@ impl FileSearchClient {
 
     /// Check if the daemon is reachable.
     pub async fn health(&mut self) -> bool {
-        if self.client.is_none() {
-            if self.connect().await.is_err() {
-                return false;
-            }
+        if self.client.is_none() && self.connect().await.is_err() {
+            return false;
         }
         true
     }

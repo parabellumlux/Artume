@@ -9,7 +9,7 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc, mpsc,
+    mpsc, Arc,
 };
 use std::thread;
 use std::time::Duration;
@@ -50,11 +50,11 @@ impl AudioOutput {
                         .map_err(|e| format!("failed to enumerate devices: {e}"))
                         .and_then(|mut devs| {
                             devs.find(|d| {
-                                d.name().map(|n| n.contains(name.as_str())).unwrap_or(false)
+                                d.description()
+                                    .map(|desc| desc.name().contains(name.as_str()))
+                                    .unwrap_or(false)
                             })
-                            .ok_or_else(|| {
-                                format!("no output device matching '{name}' found")
-                            })
+                            .ok_or_else(|| format!("no output device matching '{name}' found"))
                         }) {
                         Ok(d) => d,
                         Err(e) => {
@@ -72,7 +72,10 @@ impl AudioOutput {
                 },
             };
 
-            let device_name = device.name().unwrap_or_else(|_| "unknown".to_string());
+            let device_name = device
+                .description()
+                .map(|d| d.name().to_string())
+                .unwrap_or_else(|_| "unknown".to_string());
             info!("AudioOutput: using output device: {device_name}");
 
             let config = match device.default_output_config() {
@@ -214,7 +217,10 @@ impl AudioOutput {
 
     /// Play PCM samples. Non-blocking — returns immediately.
     pub fn play(&self, samples: Vec<f32>, sample_rate: u32) {
-        let _ = self.tx.send(PlaybackRequest { samples, sample_rate });
+        let _ = self.tx.send(PlaybackRequest {
+            samples,
+            sample_rate,
+        });
     }
 
     /// Check if the output is ready.

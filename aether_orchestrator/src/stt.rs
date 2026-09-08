@@ -68,13 +68,21 @@ impl SttEngine {
             );
         }
 
-        info!("SttEngine: loading Whisper model from {}", self.config.model_path);
+        info!(
+            "SttEngine: loading Whisper model from {}",
+            self.config.model_path
+        );
 
         let ctx = whisper_rs::WhisperContext::new_with_params(
             &self.config.model_path,
             whisper_rs::WhisperContextParameters::default(),
         )
-        .with_context(|| format!("Failed to load Whisper model from {}", self.config.model_path))?;
+        .with_context(|| {
+            format!(
+                "Failed to load Whisper model from {}",
+                self.config.model_path
+            )
+        })?;
 
         self.ctx = Some(ctx);
         info!("SttEngine: Whisper model loaded successfully");
@@ -100,7 +108,8 @@ impl SttEngine {
         );
 
         // Build the inference parameters.
-        let mut params = whisper_rs::FullParams::new(whisper_rs::SamplingStrategy::Greedy { best_of: 1 });
+        let mut params =
+            whisper_rs::FullParams::new(whisper_rs::SamplingStrategy::Greedy { best_of: 1 });
 
         params.set_n_threads(self.config.n_threads);
         params.set_language(Some(&self.config.language));

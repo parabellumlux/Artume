@@ -21,6 +21,6 @@ pub mod extractor;
 
 pub use engine::{BrowserEngine, BrowserError, FetchResult, SearchResult};
 pub use extractor::{
-    ActionableElement, ContentLink, ConversationalFormatter, ExtractedContent,
-    ExtractionMetadata, ReadabilityExtractor, TableDescription,
+    ActionableElement, ContentLink, ConversationalFormatter, ExtractedContent, ExtractionMetadata,
+    ReadabilityExtractor, TableDescription,
 };

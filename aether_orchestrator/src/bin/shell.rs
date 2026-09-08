@@ -6,9 +6,9 @@
 //! - Captures mic audio on wake word → STT → process → TTS playback
 //! - Plays TTS responses through the default audio output device
 
-use aether_orchestrator::{ConversationConfig, ConversationLoop, StreamingTts};
-use aether_audio::output::AudioOutput;
 use aether_audio::capture::capture_until_silence;
+use aether_audio::output::AudioOutput;
+use aether_orchestrator::{ConversationConfig, ConversationLoop, StreamingTts};
 use cpal::traits::{DeviceTrait, HostTrait};
 use std::io::{self, BufRead, Write};
 use std::sync::mpsc;
@@ -49,7 +49,12 @@ async fn main() -> anyhow::Result<()> {
                     eprintln!("error: failed to enumerate devices: {e}");
                     std::process::exit(1);
                 }) {
-                    println!("  {}", dev.name().unwrap_or_else(|_| "unknown".into()));
+                    println!(
+                        "  {}",
+                        dev.description()
+                            .map(|d| d.to_string())
+                            .unwrap_or_else(|_| "unknown".into())
+                    );
                 }
                 return Ok(());
             }
@@ -171,10 +176,8 @@ async fn main() -> anyhow::Result<()> {
             match line {
                 Ok(l) => {
                     let trimmed = l.trim().to_string();
-                    if !trimmed.is_empty() {
-                        if input_tx.send(trimmed).is_err() {
-                            break;
-                        }
+                    if !trimmed.is_empty() && input_tx.send(trimmed).is_err() {
+                        break;
                     }
                 }
                 Err(_) => break,
@@ -211,7 +214,10 @@ async fn main() -> anyhow::Result<()> {
                         println!("  (too short, ignoring)");
                         continue;
                     }
-                    println!("  Captured {:.1}s of audio, transcribing...", capture.duration_secs);
+                    println!(
+                        "  Captured {:.1}s of audio, transcribing...",
+                        capture.duration_secs
+                    );
 
                     // Transcribe with STT
                     match loop_.transcribe_audio(&capture.samples) {
@@ -227,19 +233,19 @@ async fn main() -> anyhow::Result<()> {
                             match loop_.process_turn(&text).await {
                                 Ok(turn) => {
                                     let response = turn.response;
-                                    println!(
-                                        "Aether > [{}] {}",
-                                        turn.intent.label(),
-                                        response
-                                    );
+                                    println!("Aether > [{}] {}", turn.intent.label(), response);
                                     println!("       ({:.0} ms)", turn.turn_ms as f64);
 
                                     // Play TTS response
                                     #[cfg(feature = "tts")]
                                     if loop_.voice_enabled() {
                                         if let Some(ref out) = audio_out {
-                                            if let Ok(samples) = loop_.synthesize_speech(&response) {
-                                                eprintln!("       (TTS: {} samples)", samples.len());
+                                            if let Ok(samples) = loop_.synthesize_speech(&response)
+                                            {
+                                                eprintln!(
+                                                    "       (TTS: {} samples)",
+                                                    samples.len()
+                                                );
                                                 out.play(samples, 22050);
                                             }
                                         }
@@ -273,9 +279,12 @@ async fn main() -> anyhow::Result<()> {
 
             let result = if let Some(ref mut sink) = streaming_tts {
                 loop_
-                    .process_turn_with_callback(&line, Some(&mut |tok: &str| {
-                        sink.feed(tok);
-                    }))
+                    .process_turn_with_callback(
+                        &line,
+                        Some(&mut |tok: &str| {
+                            sink.feed(tok);
+                        }),
+                    )
                     .await
             } else {
                 loop_.process_turn(&line).await

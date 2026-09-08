@@ -9,10 +9,10 @@
 //! User: "Save that phone number" → Saved directly to Contacts
 //! ```
 
-pub mod ring_buffer;
 pub mod ner_resolver;
+pub mod ring_buffer;
 
+pub use ner_resolver::{ContextResolver, NerEngine};
 pub use ring_buffer::{
     BufferStats, TaggedEntity, TranscriptEntry, TranscriptRingBuffer, TranscriptSource,
 };
-pub use ner_resolver::{ContextResolver, NerEngine};
