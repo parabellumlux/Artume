@@ -6,7 +6,6 @@ Unlocks with a voice PIN. Uses Fernet symmetric encryption.
 
 import json
 import os
-from pathlib import Path
 from typing import Optional, Dict, Any
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes

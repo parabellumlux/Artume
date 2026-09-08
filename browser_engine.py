@@ -20,6 +20,9 @@ class AudioWebBrowser:
         self.h2t = html2text.HTML2Text()
         self.h2t.ignore_links = False
         self.h2t.ignore_images = True
+        self._history = []
+        self._history_index = -1
+        self._bookmarks = []
 
     def search(self, query):
         """Search DuckDuckGo HTML and return top search results for audio reading."""
@@ -55,6 +58,11 @@ class AudioWebBrowser:
 
         try:
             res = requests.get(url, headers=self.headers, timeout=12)
+            # Track history
+            if self.current_url:
+                self._history = self._history[:self._history_index + 1]
+                self._history.append(self.current_url)
+                self._history_index = len(self._history) - 1
             self.current_url = url
             soup = BeautifulSoup(res.text, 'html.parser')
 
@@ -124,6 +132,47 @@ class AudioWebBrowser:
             target_link = self.links[index - 1]
             return self.load_url(target_link['url'])
         return f"Invalid link number {index}."
+
+    def go_back(self) -> str:
+        """Navigate to previous page in history."""
+        if self._history_index > 0:
+            self._history_index -= 1
+            url = self._history[self._history_index]
+            return self.load_url(url)
+        return "No previous page in history."
+
+    def go_forward(self) -> str:
+        """Navigate to next page in history."""
+        if self._history_index < len(self._history) - 1:
+            self._history_index += 1
+            url = self._history[self._history_index]
+            return self.load_url(url)
+        return "No next page in history."
+
+    def bookmark_current(self) -> str:
+        """Bookmark the current page."""
+        if not self.current_url:
+            return "No page loaded to bookmark."
+        bookmark = {"url": self.current_url, "title": self.page_title}
+        if any(b["url"] == self.current_url for b in self._bookmarks):
+            return f"Already bookmarked: {self.page_title}."
+        self._bookmarks.append(bookmark)
+        return f"Bookmarked: {self.page_title}."
+
+    def list_bookmarks(self) -> str:
+        """List all saved bookmarks."""
+        if not self._bookmarks:
+            return "No bookmarks saved."
+        speech = f"You have {len(self._bookmarks)} bookmarks. "
+        for i, b in enumerate(self._bookmarks[:10], 1):
+            speech += f"Bookmark {i}: {b['title']}. "
+        return speech
+
+    def click_bookmark(self, index: int) -> str:
+        """Navigate to bookmark by 1-based index."""
+        if 1 <= index <= len(self._bookmarks):
+            return self.load_url(self._bookmarks[index - 1]["url"])
+        return f"Invalid bookmark number {index}."
 
 if __name__ == "__main__":
     browser = AudioWebBrowser()

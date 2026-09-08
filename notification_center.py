@@ -4,7 +4,6 @@ Queues notifications during focus, delivers in batch during idle.
 Supports: timer expiry, download complete, email arrived, build finished.
 """
 
-import asyncio
 import threading
 import time
 from dataclasses import dataclass, field

@@ -2,7 +2,7 @@
 
 import subprocess
 import re
-from typing import List, Optional
+from typing import Optional
 
 
 class AudioSink:
@@ -101,6 +101,17 @@ class AudioOutputSwitcher:
                 timeout=3
             )
             return f"Switched audio to {name}."
+        except Exception as e:
+            return f"Failed to switch audio: {str(e)[:50]}"
+
+    def switch_sink(self, index: int) -> str:
+        """Switch default audio output to a sink by index."""
+        try:
+            subprocess.run(
+                ["pactl", "set-default-sink", str(index)],
+                timeout=3
+            )
+            return f"Switched audio to sink {index}."
         except Exception as e:
             return f"Failed to switch audio: {str(e)[:50]}"
 

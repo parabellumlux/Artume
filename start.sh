@@ -35,7 +35,73 @@ echo "║           Artume OS — Starting Up            ║"
 echo "╚══════════════════════════════════════════════╝"
 echo ""
 
-# ── 1. Check NVIDIA GPUs ────────────────────────────────────────────────────
+# ── Python mode (early branch — skips GPU/Ollama checks) ──────────────────
+if [[ "${1:-}" == "--python" ]]; then
+    info "Starting Artume OS Python desktop assistant..."
+    echo ""
+
+    # Check Python
+    if ! command -v python3 &>/dev/null; then
+        die "python3 not found"
+    fi
+    ok "Python3 found: $(python3 --version 2>&1)"
+
+    # Check/create virtualenv
+    if [ ! -d ".venv" ]; then
+        warn "No virtualenv found — creating one..."
+        python3 -m venv .venv
+    fi
+    source .venv/bin/activate
+    ok "Virtualenv activated"
+
+    # Install dependencies
+    info "Installing Python dependencies..."
+    pip install -q -r requirements.txt 2>/dev/null || true
+    ok "Python dependencies installed"
+
+    # Check Piper TTS binary
+    if [ ! -x "piper/piper" ]; then
+        die "Piper TTS binary not found at piper/piper — is it installed?"
+    fi
+    ok "Piper TTS binary found"
+
+    # Check Piper model file
+    if [ ! -f "en_US-lessac-medium.onnx" ]; then
+        die "Piper model file not found: en_US-lessac-medium.onnx"
+    fi
+    ok "Piper model file found"
+
+    # Check aplay (ALSA audio output)
+    if ! command -v aplay &>/dev/null; then
+        die "aplay not found — install ALSA utils (sudo apt install alsa-utils)"
+    fi
+    ok "aplay (ALSA) found"
+
+    # Check amixer (volume control)
+    if ! command -v amixer &>/dev/null; then
+        warn "amixer not found — volume control may not work"
+    else
+        ok "amixer found"
+    fi
+
+    # Check clips directory (Phase 999 pre-recorded responses)
+    CLIP_COUNT=$(find clips/ -name "*.wav" 2>/dev/null | wc -l)
+    if [ "$CLIP_COUNT" -lt 20 ]; then
+        warn "Only $CLIP_COUNT pre-recorded clips found (expected 23) — run scripts/generate_clips.py"
+    else
+        ok "Pre-recorded clips: $CLIP_COUNT WAV files"
+    fi
+
+    # Check whisper model availability (will auto-download on first run)
+    ok "Whisper STT: will auto-download tiny.en model on first run"
+
+    echo ""
+    info "Starting Artume OS Python desktop assistant..."
+    echo ""
+    exec python3 artome_core.py
+fi
+
+# ── Rust mode: GPU check ───────────────────────────────────────────────────
 info "Checking GPUs..."
 if ! command -v nvidia-smi &>/dev/null; then
     die "nvidia-smi not found — is the NVIDIA driver installed?"
@@ -52,7 +118,7 @@ nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader 2>/dev/null
     done
 echo ""
 
-# ── 2. Check Ollama ─────────────────────────────────────────────────────────
+# ── Rust mode: Check Ollama ────────────────────────────────────────────────
 info "Checking Ollama..."
 if ! command -v ollama &>/dev/null; then
     die "ollama not found — install it from https://ollama.com"
@@ -72,7 +138,7 @@ else
 fi
 echo ""
 
-# ── 3. Check required models ────────────────────────────────────────────────
+# ── Rust mode: Check required models ───────────────────────────────────────
 info "Checking AI models..."
 MODELS=$(ollama list 2>/dev/null)
 
@@ -92,11 +158,10 @@ check_model "nemotron-3-nano:4b" "1" "Tier 2 — Router (GTX 1650S)"
 check_model "nomic-embed-text"   "" "Tier 3 — Embeddings (CPU)"
 echo ""
 
-# ── 3b. Warm up models (keep resident so first utterance isn't a cold load) ──
+# ── Rust mode: Warm up models ──────────────────────────────────────────────
 info "Warming up AI models..."
 warm_model() {
     local name="$1" desc="$2"
-    # Preload with keep_alive=-1 so the model stays resident in VRAM.
     curl -s http://localhost:11434/api/generate \
         -d "{\"model\":\"$name\",\"prompt\":\"\",\"stream\":false,\"keep_alive\":-1}" \
         >/dev/null 2>&1 && ok "$desc warmed up" || warn "$desc warm-up failed"
@@ -105,24 +170,7 @@ warm_model "llama3.1:8b"        "Llama 3.1 8B (reasoning/router)"
 warm_model "nemotron-3-nano:4b" "Nemotron-3 Nano (legacy router)"
 echo ""
 
-# ── 4. Check Python deps (for --python mode) ────────────────────────────────
-if [[ "${1:-}" == "--python" ]]; then
-    info "Checking Python dependencies..."
-    if [ ! -d ".venv" ]; then
-        warn "No virtualenv found — creating one..."
-        python3 -m venv .venv
-    fi
-    source .venv/bin/activate
-    pip install -q -r requirements.txt 2>/dev/null || true
-    ok "Python environment ready"
-    echo ""
-
-    info "Starting Artume OS Python desktop assistant..."
-    echo ""
-    exec python3 artome_core.py
-fi
-
-# ── 5. Just check mode ──────────────────────────────────────────────────────
+# ── Just check mode ────────────────────────────────────────────────────────
 if [[ "${1:-}" == "--check" ]]; then
     echo ""
     echo "╔══════════════════════════════════════════════╗"
@@ -136,14 +184,14 @@ if [[ "${1:-}" == "--check" ]]; then
     exit 0
 fi
 
-# ── 6. Build Rust shell ─────────────────────────────────────────────────────
+# ── Build Rust shell ───────────────────────────────────────────────────────
 info "Building Artume OS conversational shell..."
 echo ""
 cargo build --release -p aether-orchestrator 2>&1 | tail -3
 ok "Build complete"
 echo ""
 
-# ── 7. Run ──────────────────────────────────────────────────────────────────
+# ── Run ────────────────────────────────────────────────────────────────────
 VOICE_FLAG=""
 if [[ "${1:-}" == "--voice" ]]; then
     VOICE_FLAG="-- --voice"

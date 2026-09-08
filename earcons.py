@@ -8,6 +8,7 @@ import math
 import subprocess
 
 SOUNDS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sounds")
+IDE_SOUNDS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "artome_ide", "sounds")
 SAMPLE_RATE = 22050
 
 def generate_wave(filename, frequencies, duration_sec=0.15, fade=True):
@@ -59,6 +60,13 @@ def init_earcons():
     # Error chime: low double buzz (D3 + F3)
     generate_wave("error.wav", [146.83, 174.61], duration_sec=0.25)
 
+    # Generate IDE-specific earcons if the module is available
+    try:
+        from artome_ide import earcons as ide_earcons
+        ide_earcons.init_earcons()
+    except Exception:
+        pass
+
 _current_earcon_proc = None
 
 def play_earcon(name):
@@ -66,7 +74,16 @@ def play_earcon(name):
     global _current_earcon_proc
     filepath = os.path.join(SOUNDS_DIR, f"{name}.wav")
     if not os.path.exists(filepath):
-        init_earcons()
+        # Fallback: check IDE sounds directory
+        filepath = os.path.join(IDE_SOUNDS_DIR, f"{name}.wav")
+        if not os.path.exists(filepath):
+            init_earcons()
+    
+    # Re-check after init_earcons in case the file was generated
+    if not os.path.exists(filepath):
+        filepath = os.path.join(SOUNDS_DIR, f"{name}.wav")
+        if not os.path.exists(filepath):
+            filepath = os.path.join(IDE_SOUNDS_DIR, f"{name}.wav")
     
     try:
         if _current_earcon_proc and _current_earcon_proc.poll() is None:

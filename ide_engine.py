@@ -3,7 +3,6 @@
 
 import os
 import ast
-import traceback
 from earcons import play_earcon
 
 class AudioIDE:

@@ -3,7 +3,9 @@
 
 import os
 import shutil
-import glob
+
+# Configurable socket path — override with AETHERFS_SOCKET env var
+SOCKET_PATH = os.environ.get("AETHERFS_SOCKET", "/tmp/aetherfs.sock")
 
 class AudioFileBrowser:
     """Conversational voice file browser and manager for Artome DE."""
@@ -92,7 +94,7 @@ class AudioFileBrowser:
 
     def search_files_audio(self, query):
         """Search for files using semantic AetherFS daemon or fall back to local walk."""
-        socket_path = "/tmp/aetherfs.sock"
+        socket_path = SOCKET_PATH
         cli_path = self._get_cli_path()
         
         if os.path.exists(socket_path) and (cli_path != "aetherfs-cli" or shutil.which("aetherfs-cli")):
@@ -148,7 +150,7 @@ class AudioFileBrowser:
 
     def get_duplicates_audio(self):
         """Query the AetherFS deduplication engine for duplicate groups."""
-        socket_path = "/tmp/aetherfs.sock"
+        socket_path = SOCKET_PATH
         cli_path = self._get_cli_path()
         
         if not os.path.exists(socket_path):
@@ -193,7 +195,7 @@ class AudioFileBrowser:
         if not os.path.exists(target_path):
             return f"Directory {path} does not exist."
 
-        socket_path = "/tmp/aetherfs.sock"
+        socket_path = SOCKET_PATH
         cli_path = self._get_cli_path()
         
         if not os.path.exists(socket_path):
@@ -224,6 +226,126 @@ class AudioFileBrowser:
             return f"Created folder {folder_name}."
         except Exception as e:
             return f"Failed to create folder: {str(e)[:50]}"
+
+    def create_file(self, filename: str) -> str:
+        """Create a new empty file in current directory."""
+        path = os.path.join(self.cwd, filename)
+        try:
+            if os.path.exists(path):
+                return f"File {filename} already exists."
+            with open(path, "w"):
+                pass
+            return f"Created file {filename}."
+        except Exception as e:
+            return f"Failed to create file: {str(e)[:50]}"
+
+    def copy_file(self, source: str, destination: str) -> str:
+        """Copy a file within or across directories."""
+        src = os.path.join(self.cwd, source)
+        if not os.path.exists(src):
+            # Try fuzzy match
+            for entry in os.listdir(self.cwd):
+                if entry.lower() == source.lower():
+                    src = os.path.join(self.cwd, entry)
+                    break
+        if not os.path.exists(src):
+            return f"Source file {source} not found."
+        dst = os.path.join(self.cwd, destination)
+        try:
+            if os.path.isdir(dst):
+                dst = os.path.join(dst, os.path.basename(src))
+            shutil.copy2(src, dst)
+            return f"Copied {os.path.basename(src)} to {os.path.basename(dst)}."
+        except Exception as e:
+            return f"Copy failed: {str(e)[:50]}"
+
+    def move_file(self, source: str, destination: str) -> str:
+        """Move a file within or across directories."""
+        src = os.path.join(self.cwd, source)
+        if not os.path.exists(src):
+            for entry in os.listdir(self.cwd):
+                if entry.lower() == source.lower():
+                    src = os.path.join(self.cwd, entry)
+                    break
+        if not os.path.exists(src):
+            return f"Source file {source} not found."
+        dst = os.path.join(self.cwd, destination)
+        try:
+            if os.path.isdir(dst):
+                dst = os.path.join(dst, os.path.basename(src))
+            shutil.move(src, dst)
+            return f"Moved {os.path.basename(src)} to {os.path.basename(dst)}."
+        except Exception as e:
+            return f"Move failed: {str(e)[:50]}"
+
+    def rename_file(self, old_name: str, new_name: str) -> str:
+        """Rename a file."""
+        src = os.path.join(self.cwd, old_name)
+        if not os.path.exists(src):
+            for entry in os.listdir(self.cwd):
+                if entry.lower() == old_name.lower():
+                    src = os.path.join(self.cwd, entry)
+                    old_name = entry
+                    break
+        if not os.path.exists(src):
+            return f"File {old_name} not found."
+        dst = os.path.join(self.cwd, new_name)
+        try:
+            os.rename(src, dst)
+            return f"Renamed {old_name} to {new_name}."
+        except Exception as e:
+            return f"Rename failed: {str(e)[:50]}"
+
+    def delete_file(self, filename: str) -> str:
+        """Delete a file (with confirmation expected from caller)."""
+        path = os.path.join(self.cwd, filename)
+        if not os.path.exists(path):
+            for entry in os.listdir(self.cwd):
+                if entry.lower() == filename.lower():
+                    path = os.path.join(self.cwd, entry)
+                    filename = entry
+                    break
+        if not os.path.exists(path):
+            return f"File {filename} not found."
+        try:
+            if os.path.isdir(path):
+                shutil.rmtree(path)
+                return f"Deleted folder {filename}."
+            os.remove(path)
+            return f"Deleted file {filename}."
+        except Exception as e:
+            return f"Delete failed: {str(e)[:50]}"
+
+    def sort_directory(self, by: str = "name") -> str:
+        """List directory contents sorted by name, date, or size."""
+        try:
+            entries = os.listdir(self.cwd)
+            items = []
+            for e in entries:
+                full = os.path.join(self.cwd, e)
+                stat = os.stat(full)
+                items.append({
+                    "name": e,
+                    "is_dir": os.path.isdir(full),
+                    "size": stat.st_size,
+                    "mtime": stat.st_mtime,
+                })
+            if by == "date":
+                items.sort(key=lambda x: x["mtime"], reverse=True)
+            elif by == "size":
+                items.sort(key=lambda x: x["size"], reverse=True)
+            else:
+                items.sort(key=lambda x: x["name"].lower())
+
+            dirs = [i for i in items if i["is_dir"]]
+            files = [i for i in items if not i["is_dir"]]
+            speech = f"Sorted by {by}. {len(dirs)} folders, {len(files)} files. "
+            for i, item in enumerate(items[:10], 1):
+                kind = "folder" if item["is_dir"] else f"{round(item['size']/1024, 1)}KB"
+                speech += f"{i}. {item['name']} ({kind}). "
+            return speech
+        except Exception as e:
+            return f"Sort failed: {str(e)[:50]}"
 
 if __name__ == "__main__":
     fb = AudioFileBrowser()

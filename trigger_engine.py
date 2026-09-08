@@ -6,16 +6,14 @@ Supports:
 - Event-driven triggers (file changes, email arrival, system events, process completion)
 """
 
-import asyncio
 import json
 import os
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 from enum import Enum
-from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional
 
 
 class TriggerType(Enum):
@@ -363,7 +361,6 @@ class TriggerEngine:
                                     should_fire = True
 
                         elif trigger.trigger_type == TriggerType.IDLE:
-                            idle_secs = trigger.params.get("idle_seconds", 120)
                             # Check if user has been idle (no recent input)
                             # This is checked by the main loop, not here
                             pass
@@ -414,11 +411,13 @@ class TriggerEngine:
                     return str(value) in field.split(",")
                 return str(value) == field
 
+            # Python weekday(): Mon=0..Sun=6; cron dow: Sun=0..Sat=6
+            cron_dow = (dt.weekday() + 1) % 7
             return (match_field(minute, dt.minute) and
                     match_field(hour, dt.hour) and
                     match_field(dom, dt.day) and
                     match_field(month, dt.month) and
-                    match_field(dow, dt.weekday()))
+                    match_field(dow, cron_dow))
         except Exception:
             return False
 
@@ -482,7 +481,6 @@ class TriggerEngine:
                         current_files = set(os.listdir(path))
                         if current_files != last_files:
                             new_files = current_files - last_files
-                            removed_files = last_files - current_files
                             last_files = current_files
                             data = {"path": path, "new_files": list(new_files)}
                             self.fire(trigger_id, data)

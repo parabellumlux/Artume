@@ -3,8 +3,6 @@
 Uses Llama 3.1 8B on GTX 1080 for code reasoning tasks.
 """
 
-import json
-import os
 import re
 import requests
 from typing import Optional
@@ -34,7 +32,7 @@ class AiAssistant:
                 timeout=30,
             )
             return res.json().get("response", "").strip()
-        except Exception as e:
+        except Exception:
             return None
 
     def fix_code(self, code: str, error: str = "") -> str:

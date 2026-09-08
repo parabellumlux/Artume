@@ -58,11 +58,16 @@ class AudioSystemSettings:
 
         # WiFi network check
         try:
-            wifi_out = subprocess.check_output("nmcli -t -f active,ssid dev wifi | grep '^yes'",
-                                               shell=True, text=True, stderr=subprocess.STDOUT)
-            ssid = wifi_out.split(":")[-1].strip()
-            if ssid:
-                status_items.append(f"Connected to WiFi network {ssid}")
+            result = subprocess.run(
+                ["nmcli", "-t", "-f", "active,ssid", "dev", "wifi"],
+                capture_output=True, text=True, timeout=10
+            )
+            for line in result.stdout.strip().split("\n"):
+                if line.startswith("yes:"):
+                    ssid = line.split(":", 1)[1].strip()
+                    if ssid:
+                        status_items.append(f"Connected to WiFi network {ssid}")
+                        break
         except Exception:
             status_items.append("WiFi status unavailable")
 

@@ -4,7 +4,6 @@ Uses bluetoothctl for Bluetooth device management.
 """
 
 import subprocess
-import re
 from typing import List, Optional
 
 
@@ -41,13 +40,11 @@ class BluetoothManager:
                 mac, name = parts[1], parts[2]
                 self._devices.append(BluetoothDevice(mac, name))
 
-        # Check connected status
-        connected_output = self._run(["bluetoothctl", "info"])
-        connected_macs = set()
-        for line in connected_output.split("\n"):
-            if "Connected: yes" in line:
-                # The info command shows one device at a time
-                pass
+        # Check connected status for each device
+        for d in self._devices:
+            info_output = self._run(["bluetoothctl", "info", d.mac])
+            if "Connected: yes" in info_output:
+                d.connected = True
 
         if not self._devices:
             return "No paired Bluetooth devices found."

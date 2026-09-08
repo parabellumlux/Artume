@@ -5,11 +5,15 @@ via JSON-RPC. Provides voice-driven code reading, navigation, and editing.
 """
 
 import json
+import logging
 import os
 import socket
-import sys
+import subprocess
+import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
+
+log = logging.getLogger(__name__)
 
 SOCKET_PATH = os.environ.get("AETHER_IDE_SOCKET", "/tmp/aether-ide.sock")
 
@@ -81,6 +85,16 @@ class IdeClient:
     def get_cursor(self) -> dict:
         """Get the current cursor position."""
         return self._call("get_cursor")
+
+    def shutdown(self) -> bool:
+        """Send a JSON-RPC shutdown request and close the connection."""
+        try:
+            self._call("shutdown")
+            log.info("IDE daemon shutdown requested via JSON-RPC.")
+            return True
+        except Exception as e:
+            log.warning("IDE daemon JSON-RPC shutdown failed: %s", e)
+            return False
 
     def list_skills(self) -> list:
         """List available IDE skills."""
@@ -169,3 +183,63 @@ def where_am_i() -> str:
         return f"Line {line} of {total}"
     except RuntimeError as e:
         return f"Error: {e}"
+
+
+# ---------------------------------------------------------------------------
+# Daemon lifecycle
+# ---------------------------------------------------------------------------
+
+def _find_daemon_binary() -> Optional[str]:
+    """Locate the aether-ide-daemon binary (debug first, then release)."""
+    base = Path(__file__).resolve().parent.parent
+    for profile in ("debug", "release"):
+        candidate = base / "target" / profile / "aether-ide-daemon"
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
+def start_daemon(timeout: float = 3.0) -> bool:
+    """Start the aether-ide-daemon subprocess and wait for the socket."""
+    binary = _find_daemon_binary()
+    if binary is None:
+        log.warning("aether-ide-daemon binary not found; daemon features unavailable.")
+        return False
+
+    try:
+        subprocess.Popen(
+            [binary],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        log.info("Spawned aether-ide-daemon from %s", binary)
+    except Exception as e:
+        log.error("Failed to spawn aether-ide-daemon: %s", e)
+        return False
+
+    elapsed = 0.0
+    interval = 0.2
+    while elapsed < timeout:
+        if os.path.exists(SOCKET_PATH):
+            log.info("IDE daemon socket ready at %s", SOCKET_PATH)
+            return True
+        time.sleep(interval)
+        elapsed += interval
+
+    log.error("Timed out waiting for IDE daemon socket at %s", SOCKET_PATH)
+    return False
+
+
+def stop_daemon() -> None:
+    """Shut down the IDE daemon gracefully, then kill as safety net."""
+    client = get_client()
+    client.shutdown()
+    try:
+        subprocess.run(
+            ["pkill", "-f", "aether-ide-daemon"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        pass
+    log.info("IDE daemon stopped.")

@@ -33,7 +33,6 @@ DESIGN (v2 — two-stage, deterministic dispatch):
   identically.
 """
 
-import json
 import re
 import requests
 import subprocess
@@ -55,10 +54,20 @@ INTENT_LABELS = [
     "execute_action",
     "system_command",
     "switch_mode",
+    "ide_action",
+    "lsp_action",
+    "dap_action",
     "unknown",
 ]
 
-screen_reader = AtspiScreenReader()
+_screen_reader = None
+
+
+def _get_screen_reader():
+    global _screen_reader
+    if _screen_reader is None:
+        _screen_reader = AtspiScreenReader()
+    return _screen_reader
 
 
 def get_active_window():
@@ -193,6 +202,19 @@ def _dispatch(label: str, text: str, mode: str) -> dict:
 
     # --- web_fetch ---
     if label == "web_fetch" or any(w in low for w in ["read me", "read http", "fetch", "browse", "open http", ".com", ".org"]):
+        # Browser navigation commands
+        if any(w in low for w in ["go back", "back", "previous page"]):
+            return {"action": "web_navigate", "speech": "Going back", "target": "go_back"}
+        if any(w in low for w in ["go forward", "forward", "next page"]):
+            return {"action": "web_navigate", "speech": "Going forward", "target": "go_forward"}
+        if any(w in low for w in ["bookmark this", "save bookmark", "bookmark page"]):
+            return {"action": "web_navigate", "speech": "Saving bookmark", "target": "bookmark"}
+        if any(w in low for w in ["list bookmarks", "show bookmarks", "my bookmarks"]):
+            return {"action": "web_navigate", "speech": "Listing bookmarks", "target": "list_bookmarks"}
+        if any(w in low for w in ["open bookmark"]):
+            nums = re.findall(r'\d+', low)
+            idx = int(nums[0]) if nums else 1
+            return {"action": "web_navigate", "speech": f"Opening bookmark {idx}", "target": f"open_bookmark:{idx}"}
         url = _extract_after(text, ["read me", "read", "fetch", "browse", "open", "go to"])
         if "http" in low or ".com" in low or ".org" in low:
             return {"action": "web_navigate", "speech": f"Loading {url}", "target": f"url:{url}"}
@@ -202,6 +224,45 @@ def _dispatch(label: str, text: str, mode: str) -> dict:
     if label == "file_search" or any(w in low for w in ["find my", "find", "search for", "search files", "look for"]):
         query = _extract_after(text, ["find my", "find", "search for", "search", "look for"])
         return {"action": "file_action", "speech": f"Searching for {query}", "target": f"search_file:{query}"}
+
+    # --- file operations (copy, move, rename, delete, create, sort) ---
+    if any(w in low for w in ["copy file", "copy "]):
+        parts = re.sub(r'^(copy file|copy)\s*', '', low).split(" to ")
+        if len(parts) == 2:
+            return {"action": "file_op", "speech": f"Copying {parts[0].strip()}", "target": f"copy:{parts[0].strip()}:{parts[1].strip()}"}
+        return {"action": "file_op", "speech": "Copy requires source and destination", "target": "copy_help"}
+
+    if any(w in low for w in ["move file", "move "]):
+        parts = re.sub(r'^(move file|move)\s*', '', low).split(" to ")
+        if len(parts) == 2:
+            return {"action": "file_op", "speech": f"Moving {parts[0].strip()}", "target": f"move:{parts[0].strip()}:{parts[1].strip()}"}
+        return {"action": "file_op", "speech": "Move requires source and destination", "target": "move_help"}
+
+    if any(w in low for w in ["rename file", "rename "]):
+        parts = re.sub(r'^(rename file|rename)\s*', '', low).split(" to ")
+        if len(parts) == 2:
+            return {"action": "file_op", "speech": f"Renaming {parts[0].strip()}", "target": f"rename:{parts[0].strip()}:{parts[1].strip()}"}
+        return {"action": "file_op", "speech": "Rename requires old and new name", "target": "rename_help"}
+
+    if any(w in low for w in ["delete file", "delete ", "remove file", "remove "]):
+        name = re.sub(r'^(delete file|delete|remove file|remove)\s*', '', low)
+        return {"action": "file_op", "speech": f"Deleting {name}", "target": f"delete:{name}"}
+
+    if any(w in low for w in ["create file", "new file", "make file"]):
+        name = re.sub(r'^(create file|new file|make file)\s*', '', low)
+        return {"action": "file_op", "speech": f"Creating file {name}", "target": f"create_file:{name}"}
+
+    if any(w in low for w in ["create folder", "new folder", "make folder", "mkdir"]):
+        name = re.sub(r'^(create folder|new folder|make folder|mkdir)\s*', '', low)
+        return {"action": "file_op", "speech": f"Creating folder {name}", "target": f"create_folder:{name}"}
+
+    if any(w in low for w in ["sort by name", "sort by date", "sort by size", "sort files"]):
+        by = "name"
+        if "date" in low:
+            by = "date"
+        elif "size" in low:
+            by = "size"
+        return {"action": "file_op", "speech": f"Sorting by {by}", "target": f"sort:{by}"}
 
     # --- system_command (settings) ---
     if label == "system_command" or any(w in low for w in ["volume", "status", "timer", "bluetooth", "wifi", "audio", "sound", "speaker", "headphone", "battery", "time"]):
@@ -215,7 +276,7 @@ def _dispatch(label: str, text: str, mode: str) -> dict:
         if any(w in low for w in ["status", "battery", "system"]):
             return {"action": "setting_action", "speech": "Checking system status", "target": "status"}
         if "timer" in low:
-            return {"action": "setting_action", "speech": f"Setting timer", "target": f"set_timer:{text}"}
+            return {"action": "setting_action", "speech": "Setting timer", "target": f"set_timer:{text}"}
         if "bluetooth" in low:
             return {"action": "setting_action", "speech": f"Bluetooth: {text}", "target": f"bluetooth:{text}"}
         if "wifi" in low:
@@ -240,9 +301,115 @@ def _dispatch(label: str, text: str, mode: str) -> dict:
     if any(w in low for w in ["help", "what can i say", "what can i do", "commands"]):
         return {"action": "speak", "speech": "I can help you with browsing, email, files, documents, books, settings, and coding. Say 'switch to browser' or just tell me what you want to do.", "target": "help"}
 
+    # --- IDE commands from any mode (AI, Git, Terminal) ---
+    if any(w in low for w in ["fix this", "fix code", "fix error", "explain this", "explain code",
+                               "what does this do", "generate tests", "write tests", "add tests",
+                               "review code", "review this", "optimize code", "optimize this",
+                               "add docstring", "generate docstring", "add type hints",
+                               "refactor code", "refactor this"]):
+        return {"action": "ide_action", "speech": f"AI: {text}", "target": text}
+
+    if any(w in low for w in ["git status", "git changes", "git diff", "git log", "git history",
+                               "git branch", "current branch", "git commit", "git push",
+                               "git pull", "git switch", "checkout branch"]):
+        return {"action": "ide_action", "speech": f"Git: {text}", "target": text}
+
+    if any(w in low for w in ["run tests", "run test", "run file", "run this file",
+                               "run make", "run build", "make build", "run command",
+                               "show terminal", "terminal output", "clear terminal"]):
+        return {"action": "ide_action", "speech": f"Terminal: {text}", "target": text}
+
+    # --- LSP commands (go to definition, find references, rename, hover) ---
+    if any(w in low for w in ["go to definition", "jump to definition", "find definition",
+                               "where is this defined", "where defined"]):
+        return {"action": "lsp_action", "speech": "Finding definition", "target": "go_to_definition"}
+
+    if any(w in low for w in ["find references", "show references", "who uses this",
+                               "where is this used", "all references"]):
+        return {"action": "lsp_action", "speech": "Finding references", "target": "find_references"}
+
+    if any(w in low for w in ["rename symbol", "rename this", "rename to",
+                               "rename function", "rename variable", "rename class"]):
+        new_name = re.sub(r'^(rename (symbol|this|function|variable|class)?)\s*', '', low) if 'rename' in low else ""
+        if not new_name:
+            new_name = re.sub(r'^rename\s*', '', low)
+        return {"action": "lsp_action", "speech": f"Renaming to {new_name}", "target": f"rename:{new_name}"}
+
+    if any(w in low for w in ["hover", "what is this", "type info", "type of",
+                               "what type", "what kind"]):
+        return {"action": "lsp_action", "speech": "Checking type info", "target": "hover"}
+
+    # --- DAP commands (debug, step, continue, breakpoint) ---
+    if any(w in low for w in ["start debugging", "debug this", "debug file", "run debugger",
+                               "start debug session"]):
+        return {"action": "dap_action", "speech": "Starting debug session", "target": "launch"}
+
+    if any(w in low for w in ["set breakpoint", "add breakpoint", "break here",
+                               "pause here", "stop here"]):
+        nums = re.findall(r'\d+', low)
+        line = int(nums[0]) if nums else 1
+        return {"action": "dap_action", "speech": f"Setting breakpoint at line {line}", "target": f"breakpoint:{line}"}
+
+    if any(w in low for w in ["continue", "resume", "keep running", "go on"]):
+        return {"action": "dap_action", "speech": "Continuing execution", "target": "continue"}
+
+    if any(w in low for w in ["step over", "next line", "step", "step next"]):
+        return {"action": "dap_action", "speech": "Stepping over", "target": "step_over"}
+
+    if any(w in low for w in ["step into", "go into", "enter function"]):
+        return {"action": "dap_action", "speech": "Stepping into", "target": "step_into"}
+
+    if any(w in low for w in ["step out", "exit function", "return from"]):
+        return {"action": "dap_action", "speech": "Stepping out", "target": "step_out"}
+
+    if any(w in low for w in ["evaluate", "inspect", "watch", "print variable"]):
+        expr = re.sub(r'^(evaluate|inspect|watch|print variable)\s*', '', low)
+        return {"action": "dap_action", "speech": f"Evaluating {expr}", "target": f"evaluate:{expr}"}
+
     # --- screen summary ---
     if any(w in low for w in ["screen", "what is on", "read screen", "what's on"]):
         return {"action": "screen_summary", "speech": "Reading screen", "target": "COMMAND:SCREEN_SUMMARY"}
+
+    # --- calculator ---
+    if any(w in low for w in ["calculate", "compute", "what is ", "what's ", "how much is ", "math"]):
+        return {"action": "calculator", "speech": "Calculating", "target": text}
+
+    # --- weather ---
+    if any(w in low for w in ["weather", "forecast", "temperature", "outside"]):
+        return {"action": "weather", "speech": "Checking weather", "target": text}
+
+    # --- notes ---
+    if any(w in low for w in ["note", "take a note", "save note", "read note", "list notes",
+                               "search note", "delete note", "clear notes"]):
+        return {"action": "notes", "speech": "Managing notes", "target": text}
+
+    # --- email folder/search/attachment commands ---
+    if any(w in low for w in ["list folders", "email folders", "show folders", "go to inbox",
+                               "go to sent", "switch folder"]):
+        if "inbox" in low:
+            return {"action": "email_folder", "speech": "Switching to inbox", "target": "INBOX"}
+        if "sent" in low:
+            return {"action": "email_folder", "speech": "Switching to sent", "target": "Sent"}
+        return {"action": "email_folder", "speech": "Listing folders", "target": "list_folders"}
+
+    if any(w in low for w in ["search email", "find email", "search inbox", "email about",
+                               "email from", "email matching"]):
+        query = re.sub(r'^(search (email|inbox)|find email|email (about|from|matching))\s*', '', low)
+        return {"action": "email_search", "speech": f"Searching emails for {query}", "target": query}
+
+    if any(w in low for w in ["read email", "read inbox", "read mail", "check email",
+                               "check inbox", "what emails", "any emails"]):
+        return {"action": "email_action", "speech": "Checking email", "target": "fetch_inbox"}
+
+    if any(w in low for w in ["open email", "read message", "open message"]):
+        nums = re.findall(r'\d+', low)
+        idx = int(nums[0]) if nums else 1
+        return {"action": "email_action", "speech": f"Reading email {idx}", "target": f"read_email:{idx}"}
+
+    if any(w in low for w in ["attachments", "list attachments", "read attachments"]):
+        nums = re.findall(r'\d+', low)
+        idx = int(nums[0]) if nums else 1
+        return {"action": "email_action", "speech": f"Checking attachments for email {idx}", "target": f"attachments:{idx}"}
 
     # --- mode-specific keyword fallbacks ---
     mode_result = _mode_keywords(text, mode)
@@ -278,9 +445,9 @@ def _mode_keywords(text: str, mode: str) -> dict:
         if any(w in low for w in ["open", "load", "read"]) and ("file" in low or ".py" in low or ".rs" in low):
             return {"action": "ide_action", "speech": f"Opening {text}", "target": f"open_code:{text}"}
         if "function" in low or "def " in low:
-            return {"action": "ide_action", "speech": f"Reading function", "target": f"read_function:{text}"}
+            return {"action": "ide_action", "speech": "Reading function", "target": f"read_function:{text}"}
         if "line" in low and any(c.isdigit() for c in low):
-            return {"action": "ide_action", "speech": f"Reading lines", "target": f"read_lines:{text}"}
+            return {"action": "ide_action", "speech": "Reading lines", "target": f"read_lines:{text}"}
         if any(w in low for w in ["fix", "explain", "test", "review", "optimize", "docstring", "refactor"]):
             return {"action": "ide_action", "speech": f"AI: {text}", "target": f"{text}"}
         if "git" in low:
@@ -288,13 +455,31 @@ def _mode_keywords(text: str, mode: str) -> dict:
         if any(w in low for w in ["run", "test", "build", "make"]):
             return {"action": "ide_action", "speech": f"Running: {text}", "target": f"run:{text}"}
 
+    # --- IDE commands from ANY mode (AI, Git, Terminal) ---
+    if any(w in low for w in ["fix this", "fix code", "fix error", "explain this", "explain code",
+                               "what does this do", "generate tests", "write tests", "add tests",
+                               "review code", "review this", "optimize code", "optimize this",
+                               "add docstring", "generate docstring", "add type hints",
+                               "refactor code", "refactor this"]):
+        return {"action": "ide_action", "speech": f"AI: {text}", "target": text}
+
+    if any(w in low for w in ["git status", "git changes", "git diff", "git log", "git history",
+                               "git branch", "current branch", "git commit", "git push",
+                               "git pull", "git switch", "checkout branch"]):
+        return {"action": "ide_action", "speech": f"Git: {text}", "target": text}
+
+    if any(w in low for w in ["run tests", "run test", "run file", "run this file",
+                               "run make", "run build", "make build", "run command",
+                               "show terminal", "terminal output", "clear terminal"]):
+        return {"action": "ide_action", "speech": f"Terminal: {text}", "target": text}
+
     if mode == "FILES":
         if any(w in low for w in ["list", "show", "what", "contents", "files", "folders"]):
             return {"action": "file_action", "speech": "Listing directory contents", "target": "list_dir"}
         if any(w in low for w in ["go to", "open", "enter", "cd", "change"]) and "folder" in low:
             return {"action": "file_action", "speech": f"Navigating to {text}", "target": f"change_dir:{text}"}
         if "read" in low or "open" in low:
-            return {"action": "file_action", "speech": f"Reading file", "target": f"read_file:{text}"}
+            return {"action": "file_action", "speech": "Reading file", "target": f"read_file:{text}"}
 
     if mode == "DOCS":
         if any(w in low for w in ["new", "start", "create"]) and "doc" in low:
@@ -313,11 +498,11 @@ def _mode_keywords(text: str, mode: str) -> dict:
             if "down" in low or "decrease" in low:
                 return {"action": "setting_action", "speech": "Decreasing volume", "target": "volume_down"}
             if "set" in low or any(c.isdigit() for c in low):
-                return {"action": "setting_action", "speech": f"Setting volume", "target": f"set_volume:{text}"}
+                return {"action": "setting_action", "speech": "Setting volume", "target": f"set_volume:{text}"}
         if any(w in low for w in ["status", "time", "battery", "system"]):
             return {"action": "setting_action", "speech": "Checking system status", "target": "status"}
         if "timer" in low:
-            return {"action": "setting_action", "speech": f"Setting timer", "target": f"set_timer:{text}"}
+            return {"action": "setting_action", "speech": "Setting timer", "target": f"set_timer:{text}"}
         if "bluetooth" in low:
             return {"action": "setting_action", "speech": f"Bluetooth: {text}", "target": f"bluetooth:{text}"}
         if "wifi" in low:
@@ -327,9 +512,9 @@ def _mode_keywords(text: str, mode: str) -> dict:
 
     if mode == "EBOOK":
         if any(w in low for w in ["open", "load"]) and ("book" in low or ".epub" in low or ".pdf" in low):
-            return {"action": "ebook_action", "speech": f"Opening book", "target": f"open_book:{text}"}
+            return {"action": "ebook_action", "speech": "Opening book", "target": f"open_book:{text}"}
         if "chapter" in low:
-            return {"action": "ebook_action", "speech": f"Reading chapter", "target": f"read_chapter:{text}"}
+            return {"action": "ebook_action", "speech": "Reading chapter", "target": f"read_chapter:{text}"}
         if "list" in low or "chapters" in low:
             return {"action": "ebook_action", "speech": "Listing chapters", "target": "list_chapters"}
         if "bookmark" in low:
@@ -361,7 +546,7 @@ def ask_artome_ai(user_speech, mode="DESKTOP"):
     # TIER 0: Fast path — screen summary (bypasses model entirely)
     # ====================================================================
     if "screen" in low_speech or "what is on screen" in low_speech or "read screen" in low_speech or mode == "SCREEN_SUMMARY":
-        accessibility_tree = screen_reader.generate_screen_summary_payload()
+        accessibility_tree = _get_screen_reader().generate_screen_summary_payload()
         summary_prompt = f"""You are Artome OS voice assistant. Summarize what is on the screen for a blind user in 2 concise sentences based on this UI accessibility tree.
 
 Active Window: "{window_title}"

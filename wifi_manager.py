@@ -4,7 +4,6 @@ Uses nmcli for network management.
 """
 
 import subprocess
-import re
 from typing import List, Optional
 
 
@@ -47,7 +46,11 @@ class WiFiManager:
 
         speech = f"Found {len(self._networks)} networks. "
         for n in self._networks[:8]:
-            bars = "strong" if int(n.signal) > 70 else "medium" if int(n.signal) > 40 else "weak"
+            try:
+                sig = int(n.signal)
+            except (ValueError, TypeError):
+                sig = 0
+            bars = "strong" if sig > 70 else "medium" if sig > 40 else "weak"
             speech += f"{n.ssid} ({bars} signal). "
         return speech
 
@@ -73,7 +76,7 @@ class WiFiManager:
     def disconnect(self) -> str:
         """Disconnect from current WiFi network."""
         try:
-            result = subprocess.run(
+            subprocess.run(
                 ["nmcli", "dev", "disconnect", "wifi"],
                 capture_output=True, text=True, timeout=10
             )
@@ -90,6 +93,10 @@ class WiFiManager:
                 return f"Connected to {parts[1]} with {parts[2]}% signal strength."
         return "Not connected to any WiFi network."
 
+    def get_status(self) -> str:
+        """Alias for status()."""
+        return self.status()
+
     def turn_on(self) -> str:
         """Enable WiFi."""
         self._run(["nmcli", "radio", "wifi", "on"])
@@ -102,15 +109,25 @@ class WiFiManager:
 
     def save_credentials(self, ssid: str, password: str) -> str:
         """Save WiFi credentials for auto-connect."""
+        import tempfile
+        import os
         try:
-            result = subprocess.run(
-                ["nmcli", "connection", "add", "type", "wifi", "con-name", ssid,
-                 "ssid", ssid, "wifi-sec.key-mgmt", "wpa-psk", "wifi-sec.psk", password],
-                capture_output=True, text=True, timeout=10
-            )
-            if "successfully" in result.stdout.lower():
-                return f"Saved WiFi network {ssid}."
-            return f"Failed to save: {result.stderr[:100]}"
+            # Write password to temp file to avoid exposing in ps output
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+                f.write(password)
+                pw_path = f.name
+            try:
+                result = subprocess.run(
+                    ["nmcli", "connection", "add", "type", "wifi", "con-name", ssid,
+                     "ssid", ssid, "wifi-sec.key-mgmt", "wpa-psk",
+                     "wifi-sec.psk", f"file:{pw_path}"],
+                    capture_output=True, text=True, timeout=10
+                )
+                if "successfully" in result.stdout.lower():
+                    return f"Saved WiFi network {ssid}."
+                return f"Failed to save: {result.stderr[:100]}"
+            finally:
+                os.unlink(pw_path)
         except Exception as e:
             return f"WiFi error: {str(e)[:50]}"
 

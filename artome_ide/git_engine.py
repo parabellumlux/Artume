@@ -72,7 +72,7 @@ class GitEngine:
 
     def log(self, count: int = 5) -> str:
         """Read recent commits."""
-        output = self._git("log", f"--oneline", f"-{count}")
+        output = self._git("log", "--oneline", f"-{count}")
         if not output:
             return "No commits found."
         lines = output.split("\n")

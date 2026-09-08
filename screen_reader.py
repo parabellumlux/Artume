@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Artome Screen Reader Module - AT-SPI2 Accessibility Tree Inspector & AI Summarizer."""
 
-import os
 import subprocess
 import gi
 gi.require_version('Atspi', '2.0')

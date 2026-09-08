@@ -2,7 +2,6 @@
 """Artome Audio EBook & Document Reader - EPUB, PDF & Text voice navigation engine."""
 
 import os
-import re
 import ebooklib
 from ebooklib import epub
 from pypdf import PdfReader
@@ -73,7 +72,6 @@ class AudioEBookReader:
         self.book_title = os.path.basename(filepath)
         self.author = "PDF Document"
 
-        total_pages = len(reader.pages)
         # Group pages into chapters (every 5 pages or per page)
         for i, page in enumerate(reader.pages, 1):
             text = page.extract_text() or ""

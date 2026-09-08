@@ -7,7 +7,6 @@ import email
 from email.header import decode_header
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from bs4 import BeautifulSoup
 import html2text
 
 class AudioMailClient:
@@ -19,6 +18,11 @@ class AudioMailClient:
         self.h2t = html2text.HTML2Text()
         self.h2t.ignore_links = True
         self.h2t.ignore_images = True
+        self._imap_server = ""
+        self._username = ""
+        self._password = ""
+        self._current_folder = "INBOX"
+        self._folders = []
 
     def _decode_str(self, header_val):
         if not header_val:
@@ -30,6 +34,9 @@ class AudioMailClient:
 
     def fetch_inbox(self, imap_server, username, password, limit=5):
         """Fetch unread emails from IMAP server and return audio summary."""
+        self._imap_server = imap_server
+        self._username = username
+        self._password = password
         try:
             mail = imaplib.IMAP4_SSL(imap_server)
             mail.login(username, password)
@@ -127,6 +134,115 @@ class AudioMailClient:
             return f"Email successfully sent to {to_user}."
         except Exception as e:
             return f"Failed to send email: {str(e)[:50]}"
+
+    def list_folders(self) -> str:
+        """List all email folders."""
+        if not self._imap_server or not self._username:
+            return "Email not configured. Check your vault credentials."
+        try:
+            mail = imaplib.IMAP4_SSL(self._imap_server)
+            mail.login(self._username, self._password)
+            status, folders = mail.list()
+            mail.logout()
+            self._folders = []
+            for f in folders:
+                if isinstance(f, bytes):
+                    parts = f.decode().split('" ')
+                    if len(parts) >= 2:
+                        name = parts[-1].strip('"')
+                        self._folders.append(name)
+            if not self._folders:
+                return "No folders found."
+            speech = f"Found {len(self._folders)} folders. "
+            for i, name in enumerate(self._folders[:10], 1):
+                speech += f"Folder {i}: {name}. "
+            return speech
+        except Exception as e:
+            return f"Could not list folders: {str(e)[:50]}"
+
+    def switch_folder(self, folder_name: str) -> str:
+        """Switch to a different email folder."""
+        if not self._imap_server or not self._username:
+            return "Email not configured."
+        try:
+            mail = imaplib.IMAP4_SSL(self._imap_server)
+            mail.login(self._username, self._password)
+            status, _ = mail.select(folder_name)
+            mail.logout()
+            if status == "OK":
+                self._current_folder = folder_name
+                return f"Switched to {folder_name}."
+            return f"Folder '{folder_name}' not found."
+        except Exception as e:
+            return f"Could not switch folder: {str(e)[:50]}"
+
+    def search_emails(self, query: str, limit: int = 5) -> str:
+        """Search emails by subject or body text."""
+        if not self._imap_server or not self._username:
+            return "Email not configured."
+        try:
+            mail = imaplib.IMAP4_SSL(self._imap_server)
+            mail.login(self._username, self._password)
+            mail.select(self._current_folder)
+            status, response = mail.search(None, f'(OR SUBJECT "{query}" BODY "{query}")')
+            email_ids = response[0].split()
+            if not email_ids:
+                mail.logout()
+                return f"No emails found matching '{query}'."
+            results = []
+            for e_id in email_ids[-limit:]:
+                status, data = mail.fetch(e_id, "(RFC822)")
+                for response_part in data:
+                    if isinstance(response_part, tuple):
+                        msg = email.message_from_bytes(response_part[1])
+                        subject = self._decode_str(msg.get("Subject"))
+                        from_sender = self._decode_str(msg.get("From"))
+                        results.append({"from": from_sender, "subject": subject})
+            mail.logout()
+            if not results:
+                return f"No emails found matching '{query}'."
+            speech = f"Found {len(results)} emails matching '{query}'. "
+            for i, item in enumerate(results, 1):
+                clean_sender = item['from'].split('<')[0].strip()
+                speech += f"Email {i} from {clean_sender}: {item['subject']}. "
+            return speech
+        except Exception as e:
+            return f"Search failed: {str(e)[:50]}"
+
+    def read_attachments(self, index: int = 1) -> str:
+        """List attachments for an email by index."""
+        if not self.inbox_cache:
+            return "No emails loaded."
+        if index < 1 or index > len(self.inbox_cache):
+            return "Invalid email number."
+        if not self._imap_server or not self._username:
+            return "Email not configured."
+        try:
+            e_id = self.inbox_cache[index - 1]["id"]
+            mail = imaplib.IMAP4_SSL(self._imap_server)
+            mail.login(self._username, self._password)
+            mail.select(self._current_folder)
+            status, data = mail.fetch(e_id, "(RFC822)")
+            mail.logout()
+            for response_part in data:
+                if isinstance(response_part, tuple):
+                    msg = email.message_from_bytes(response_part[1])
+                    attachments = []
+                    for part in msg.walk():
+                        content_disposition = str(part.get("Content-Disposition", ""))
+                        if "attachment" in content_disposition:
+                            filename = part.get_filename()
+                            if filename:
+                                attachments.append(filename)
+                    if not attachments:
+                        return f"Email {index} has no attachments."
+                    speech = f"Email {index} has {len(attachments)} attachment{'s' if len(attachments) != 1 else ''}. "
+                    for i, name in enumerate(attachments, 1):
+                        speech += f"Attachment {i}: {name}. "
+                    return speech
+            return "Could not read email."
+        except Exception as e:
+            return f"Could not read attachments: {str(e)[:50]}"
 
 if __name__ == "__main__":
     mail = AudioMailClient()

@@ -25,8 +25,6 @@ skill.toml format:
     prompt_template = ""          # optional, {input} placeholder
 """
 
-import importlib.util
-import json
 import os
 import subprocess
 import sys
@@ -135,7 +133,6 @@ class SkillRegistry:
 
         # Prompt template (LLM-based)
         if meta.prompt_template:
-            prompt = meta.prompt_template.replace("{input}", user_text)
             return f"[Skill '{name}' would process: {user_text}]"
 
         return None

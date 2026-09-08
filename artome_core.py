@@ -1,98 +1,433 @@
 #!/usr/bin/env python3
-"""Artome OS Core Desktop Environment Daemon - Complete Audio Suite with Barge-In & AT-SPI2 Screen Reader."""
+"""Artume OS Core Desktop Environment Daemon — thin dispatcher with lazy imports."""
 
 import os
+import signal
 import sys
-import subprocess
-from faster_whisper import WhisperModel
 
-from earcons import init_earcons, play_earcon
-from audio_engine import PiperTTS, DynamicVADListener
-from intent_router import ask_artome_ai, ask_ai
-from browser_engine import AudioWebBrowser
-from mail_engine import AudioMailClient
-from ide_engine import AudioIDE
-from file_browser_engine import AudioFileBrowser
-from doc_writer_engine import AudioDocWriter
-from system_settings_engine import AudioSystemSettings
-from ebook_engine import AudioEBookReader
-from command_navigator import AudioCommandNavigator
-from wakeword_engine import WakeWordDetector
-from screen_reader import AtspiScreenReader
 
-# Artome IDE integration modules
-from artome_ide.ai_assistant import AiAssistant
-from artome_ide.git_engine import GitEngine
-from artome_ide.terminal_engine import TerminalEngine
-
-# Trigger engine
-from trigger_engine import get_trigger_engine, TriggerEvent
-
-print("Initializing Artome OS Core Engine...")
-init_earcons()
-
-print("Loading Whisper Speech Recognition...")
-whisper_model = WhisperModel("tiny.en", device="cpu", compute_type="int8")
-
-tts = PiperTTS()
-listener = DynamicVADListener(silence_threshold_ms=750, energy_threshold=0.018)
-
-browser = AudioWebBrowser()
-mail_client = AudioMailClient()
-ide = AudioIDE()
-file_browser = AudioFileBrowser()
-doc_writer = AudioDocWriter()
-sys_settings = AudioSystemSettings()
-ebook_reader = AudioEBookReader()
-navigator = AudioCommandNavigator()
-wakeword = WakeWordDetector()
-screen_reader = AtspiScreenReader()
-
-# Artome IDE integration engines
-ai_assistant = AiAssistant()
-git_engine = GitEngine(project_root=os.path.dirname(os.path.abspath(__file__)))
-terminal_engine = TerminalEngine()
-
-# Initialize trigger engine
-trigger_engine = get_trigger_engine()
-trigger_engine.on_event(lambda event: handle_trigger_event(event))
-trigger_engine.start()
-if not trigger_engine.is_onboarding_complete():
-    print("First run detected — onboarding will start on first interaction.")
-
-current_mode = "DESKTOP"
-
-# Start aether-ide-daemon if the binary exists
-IDE_DAEMON_BIN = "/usr/local/bin/aether-ide-daemon"
-if os.path.exists(IDE_DAEMON_BIN):
+def _init_engine(name, factory, default=None):
     try:
-        subprocess.Popen([IDE_DAEMON_BIN], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        print("aether-ide-daemon started.")
+        return factory()
     except Exception as e:
-        print(f"Could not start aether-ide-daemon: {e}")
-else:
-    print("aether-ide-daemon binary not found at {IDE_DAEMON_BIN}. IDE daemon features unavailable.")
+        print(f"WARNING: {name} failed to init: {e}")
+        return default
 
-def handle_trigger_event(event):
-    """Handle trigger engine events — speak notifications and execute actions."""
+
+def _init_all():
+    """Initialize all engines with graceful degradation."""
+    from earcons import init_earcons
+    from audio_engine import PiperTTS, DynamicVADListener
+    from faster_whisper import WhisperModel
+
+    print("Initializing Artome OS Core Engine...")
+    init_earcons()
+
+    print("Loading Whisper Speech Recognition...")
+    whisper_model = WhisperModel("tiny.en", device="cpu", compute_type="int8")
+    tts = PiperTTS()
+    listener = DynamicVADListener(silence_threshold_ms=750, energy_threshold=0.018)
+
+    from browser_engine import AudioWebBrowser
+    from mail_engine import AudioMailClient
+    from ide_engine import AudioIDE
+    from file_browser_engine import AudioFileBrowser
+    from doc_writer_engine import AudioDocWriter
+    from system_settings_engine import AudioSystemSettings
+    from ebook_engine import AudioEBookReader
+    from command_navigator import AudioCommandNavigator
+    from wakeword_engine import WakeWordDetector
+    from screen_reader import AtspiScreenReader
+
+    from artome_ide.ai_assistant import AiAssistant
+    from artome_ide.git_engine import GitEngine
+    from artome_ide.terminal_engine import TerminalEngine
+
+    from credential_vault import CredentialVault
     from notification_center import get_notification_center
+    from clipboard_manager import ClipboardManager
+    from window_manager import WindowManager
+    from app_launcher import AppLauncher
+    from confirmation_dialog import get_dialog as get_confirmation_dialog
+    from state_manager import get_state_manager
+
+    from bluetooth_manager import BluetoothManager
+    from wifi_manager import WiFiManager
+    from audio_output_switcher import AudioOutputSwitcher
+    from power_manager import get_power_manager
+
+    from trigger_engine import get_trigger_engine
+
+    from calculator import get_calculator
+    from weather_service import get_weather
+    from notes_manager import NotesManager
+
+    browser = _init_engine("BrowserEngine", AudioWebBrowser)
+    mail_client = _init_engine("MailEngine", AudioMailClient)
+    ide = _init_engine("IDEEngine", AudioIDE)
+    file_browser = _init_engine("FileBrowser", AudioFileBrowser)
+    doc_writer = _init_engine("DocWriter", AudioDocWriter)
+    sys_settings = _init_engine("SystemSettings", AudioSystemSettings)
+    ebook_reader = _init_engine("EBookReader", AudioEBookReader)
+    navigator = _init_engine("CommandNavigator", AudioCommandNavigator)
+    wakeword = _init_engine("WakeWord", WakeWordDetector)
+    screen_reader = _init_engine("ScreenReader", AtspiScreenReader)
+
+    ai_assistant = _init_engine("AiAssistant", AiAssistant)
+    git_engine = _init_engine("GitEngine", lambda: GitEngine(project_root=os.path.dirname(os.path.abspath(__file__))))
+    terminal_engine = _init_engine("TerminalEngine", TerminalEngine)
+
+    vault = _init_engine("CredentialVault", CredentialVault)
+    notification_center = get_notification_center()
+    notification_center.set_speak_callback(lambda text: tts.speak(text))
+    clipboard = _init_engine("ClipboardManager", ClipboardManager)
+    window_mgr = _init_engine("WindowManager", WindowManager)
+    app_launcher = _init_engine("AppLauncher", AppLauncher)
+    confirm_dialog = get_confirmation_dialog(tts_engine=tts, whisper_model=whisper_model)
+    state_mgr = get_state_manager()
+
+    bt_manager = _init_engine("BluetoothManager", BluetoothManager)
+    wifi_manager = _init_engine("WiFiManager", WiFiManager)
+    audio_switcher = _init_engine("AudioOutputSwitcher", AudioOutputSwitcher)
+    power_mgr = get_power_manager()
+
+    trigger_engine = get_trigger_engine()
+
+    calculator = get_calculator()
+    weather = get_weather()
+    notes = _init_engine("NotesManager", NotesManager)
+
+    return {
+        'tts': tts, 'listener': listener, 'whisper_model': whisper_model,
+        'wakeword': wakeword, 'screen_reader': screen_reader, 'navigator': navigator,
+        'browser': browser, 'mail_client': mail_client, 'ide': ide,
+        'file_browser': file_browser, 'doc_writer': doc_writer, 'sys_settings': sys_settings,
+        'ebook_reader': ebook_reader, 'ai_assistant': ai_assistant,
+        'git_engine': git_engine, 'terminal_engine': terminal_engine,
+        'vault': vault, 'notification_center': notification_center,
+        'clipboard': clipboard, 'window_mgr': window_mgr, 'app_launcher': app_launcher,
+        'confirm_dialog': confirm_dialog, 'state_mgr': state_mgr,
+        'bt_manager': bt_manager, 'wifi_manager': wifi_manager,
+        'audio_switcher': audio_switcher, 'power_mgr': power_mgr,
+        'trigger_engine': trigger_engine,
+        'calculator': calculator, 'weather': weather, 'notes': notes,
+    }
+
+
+def execute_action(intent, user_speech, current_mode, ctx):
+    """Thin dispatcher — delegates to handler modules."""
+    from earcons import play_earcon
+    from handlers import ide as ide_handler
+    from handlers import hardware as hw_handler
+    from handlers import desktop as desktop_handler
+    from handlers import modes as modes_handler
+
+    tts = ctx['tts']
+    action = intent.get("action", "speak")
+    speech = intent.get("speech", "")
+    target = intent.get("target", "")
+    low_speech = user_speech.lower() if user_speech else speech.lower()
+
+    # 0. Wake Word Mode Toggle
+    if "wake word" in low_speech:
+        wakeword = ctx['wakeword']
+        if "enable" in low_speech or "on" in low_speech:
+            msg = wakeword.toggle_wake_word(True)
+        elif "disable" in low_speech or "off" in low_speech:
+            msg = wakeword.toggle_wake_word(False)
+        else:
+            msg = wakeword.toggle_wake_word()
+        play_earcon("success")
+        tts.speak(msg)
+        return current_mode
+
+    # 1. Screen Summary
+    if action == "screen_summary" or "screen" in low_speech or target == "COMMAND:SCREEN_SUMMARY":
+        play_earcon("success")
+        if speech:
+            tts.speak(speech)
+        else:
+            summary = ctx['screen_reader'].generate_screen_summary_payload()
+            tts.speak(f"Screen summary: {summary[:300]}")
+        return current_mode
+
+    # 1b. Calculator
+    if action == "calculator":
+        import re
+        play_earcon("success")
+        # Extract math expression from speech
+        expr = re.sub(r'^(calculate|compute|what is|what\'s|how much is|math)\s*', '', low_speech)
+        if not expr:
+            expr = target
+        result = ctx['calculator'].calculate(expr)
+        tts.speak(f"The result is {result}")
+        return current_mode
+
+    # 1c. Weather
+    if action == "weather":
+        play_earcon("success")
+        import re
+        location = re.sub(r'^(weather|forecast|temperature|outside)\s*(in|for|at)?\s*', '', low_speech)
+        location = location.strip() or None
+        result = ctx['weather'].get_weather(location)
+        tts.speak(result)
+        return current_mode
+
+    # 1d. Notes
+    if action == "notes":
+        import re
+        play_earcon("success")
+        if "clear notes" in low_speech:
+            result = ctx['notes'].clear()
+            tts.speak(result)
+        elif "delete note" in low_speech:
+            nums = re.findall(r'\d+', low_speech)
+            if nums:
+                result = ctx['notes'].delete(int(nums[0]))
+                tts.speak(result)
+            else:
+                tts.speak("Which note? Say 'delete note 1'.")
+        elif "list notes" in low_speech:
+            result = ctx['notes'].list_notes()
+            tts.speak(result)
+        elif "read note" in low_speech:
+            nums = re.findall(r'\d+', low_speech)
+            if nums:
+                result = ctx['notes'].read_note(int(nums[0]))
+                tts.speak(result)
+            else:
+                tts.speak("Which note? Say 'read note 1'.")
+        elif "search note" in low_speech:
+            query = re.sub(r'^(search note)\s*', '', low_speech)
+            result = ctx['notes'].search(query) if query else "What should I search for?"
+            tts.speak(result)
+        elif "take a note" in low_speech or "save note" in low_speech or "note" in low_speech:
+            note_text = re.sub(r'^(take a note|save note|note)\s*', '', low_speech)
+            if note_text:
+                result = ctx['notes'].add(note_text)
+                tts.speak(result)
+            else:
+                tts.speak("What would you like to note? Say 'take a note' followed by your note.")
+        return current_mode
+
+    # 2. Global Help & Navigation
+    if any(h in low_speech for h in ["help", "what can i say", "commands", "what can i do"]):
+        play_earcon("success")
+        tts.speak(ctx['navigator'].get_audio_help(current_mode))
+        return current_mode
+
+    if any(m in low_speech for m in ["main menu", "menu", "navigation menu", "categories"]):
+        play_earcon("success")
+        tts.speak(ctx['navigator'].get_main_menu_audio())
+        return current_mode
+
+    new_mode, menu_speech = ctx['navigator'].select_menu_option(low_speech)
+    if new_mode:
+        play_earcon("success")
+        tts.speak(menu_speech)
+        return new_mode
+
+    # --- Phase 999: Pre-recorded anticipatory response ---
+    from clip_registry import lookup as clip_lookup
+    _last_clip = None
+    if speech:
+        _last_clip = clip_lookup(action, target)
+        if _last_clip:
+            play_earcon(_last_clip["file"].replace(".wav", ""))
+        else:
+            tts.speak(speech)
+
+    # Pass clip_played flag to handlers so they skip their own ack
+    ctx['clip_played'] = _last_clip is not None
+
+    try:
+        target_lower = target.lower() if target else speech.lower()
+
+        # --- Browser navigation (back, forward, bookmark) ---
+        if action == "web_navigate" and target in ("go_back", "go_forward", "bookmark",
+                                                     "list_bookmarks") or \
+           action == "web_navigate" and target.startswith("open_bookmark:"):
+            play_earcon("success")
+            browser = ctx['browser']
+            if browser is None:
+                tts.speak("Browser is not available.")
+            elif target == "go_back":
+                tts.speak(browser.go_back())
+            elif target == "go_forward":
+                tts.speak(browser.go_forward())
+            elif target == "bookmark":
+                tts.speak(browser.bookmark_current())
+            elif target == "list_bookmarks":
+                tts.speak(browser.list_bookmarks())
+            elif target.startswith("open_bookmark:"):
+                idx = int(target.split(":")[1])
+                tts.speak(browser.click_bookmark(idx))
+            return current_mode
+
+        # --- Email folder/search/attachment commands ---
+        if action == "email_folder":
+            play_earcon("success")
+            mail_client = ctx['mail_client']
+            if mail_client is None:
+                tts.speak("Email client is not available.")
+            elif target == "list_folders":
+                tts.speak(mail_client.list_folders())
+            else:
+                tts.speak(mail_client.switch_folder(target))
+            return current_mode
+
+        if action == "email_search":
+            play_earcon("success")
+            mail_client = ctx['mail_client']
+            if mail_client is None:
+                tts.speak("Email client is not available.")
+            else:
+                tts.speak(mail_client.search_emails(target))
+            return current_mode
+
+        if action == "email_action":
+            play_earcon("success")
+            mail_client = ctx['mail_client']
+            if mail_client is None:
+                tts.speak("Email client is not available.")
+            elif target == "fetch_inbox":
+                # Use vault credentials if available
+                from credential_vault import get_vault
+                vault = get_vault()
+                creds = vault.get("email")
+                if creds:
+                    result = mail_client.fetch_inbox(
+                        creds.get("imap_server", ""),
+                        creds.get("username", ""),
+                        creds.get("password", ""),
+                    )
+                    tts.speak(result)
+                else:
+                    tts.speak("No email credentials stored. Say 'store credential' to set up.")
+            elif target.startswith("read_email:"):
+                idx = int(target.split(":")[1])
+                tts.speak(mail_client.read_email_audio(idx))
+            elif target.startswith("attachments:"):
+                idx = int(target.split(":")[1])
+                tts.speak(mail_client.read_attachments(idx))
+            return current_mode
+
+        # --- File operations (copy, move, rename, delete, create, sort) ---
+        if action in ("file_action", "file_op"):
+            play_earcon("success")
+            file_browser = ctx['file_browser']
+            if file_browser is None:
+                tts.speak("File browser is not available.")
+            elif target.startswith("search_file:"):
+                query = target.split(":", 1)[1]
+                tts.speak(file_browser.search_files_audio(query))
+            elif target.startswith("copy:"):
+                parts = target.split(":", 2)
+                if len(parts) == 3:
+                    tts.speak(file_browser.copy_file(parts[1], parts[2]))
+                else:
+                    tts.speak("Say 'copy [file] to [destination]'.")
+            elif target.startswith("move:"):
+                parts = target.split(":", 2)
+                if len(parts) == 3:
+                    tts.speak(file_browser.move_file(parts[1], parts[2]))
+                else:
+                    tts.speak("Say 'move [file] to [destination]'.")
+            elif target.startswith("rename:"):
+                parts = target.split(":", 2)
+                if len(parts) == 3:
+                    tts.speak(file_browser.rename_file(parts[1], parts[2]))
+                else:
+                    tts.speak("Say 'rename [old name] to [new name]'.")
+            elif target.startswith("delete:"):
+                name = target.split(":", 1)[1]
+                tts.speak(file_browser.delete_file(name))
+            elif target.startswith("create_file:"):
+                name = target.split(":", 1)[1]
+                tts.speak(file_browser.create_file(name))
+            elif target.startswith("create_folder:"):
+                name = target.split(":", 1)[1]
+                tts.speak(file_browser.create_folder(name))
+            elif target.startswith("sort:"):
+                by = target.split(":", 1)[1]
+                tts.speak(file_browser.sort_directory(by))
+            return current_mode
+
+        # Hardware commands (global, any mode)
+        if hw_handler.handle(low_speech, ctx):
+            return current_mode
+
+        # Desktop commands (global, any mode)
+        if desktop_handler.handle(low_speech, ctx):
+            return current_mode
+
+        # Mode-specific commands
+        handled, new_mode = modes_handler.handle(
+            low_speech, target_lower, target, speech, action, current_mode, ctx)
+        if handled:
+            return new_mode
+
+        # IDE mode commands (checked last — most specific)
+        if current_mode == "IDE" or action == "ide_action":
+            if ide_handler.handle(low_speech, target_lower, target, ctx):
+                return current_mode
+
+        # Fallback
+        play_earcon("success")
+
+    except Exception as e:
+        print(f"Execution Error: {e}")
+        play_earcon("error")
+        tts.speak(f"Action error: {str(e)[:40]}")
+
+    return current_mode
+
+
+def handle_trigger_event(event, ctx):
+    """Handle trigger engine events."""
+    from notification_center import get_notification_center, NotificationCategory, NotificationPriority
     nc = get_notification_center()
-    nc.set_speak_callback(lambda text: tts.speak(text) if 'tts' in dir() else None)
+    tts = ctx['tts']
+    listener = ctx['listener']
+    sys_settings = ctx['sys_settings']
+    trigger_engine = ctx['trigger_engine']
+
+    if listener.is_listening:
+        return
 
     if event.trigger_id == "first-run-onboarding":
         steps = trigger_engine.get_onboarding_steps()
         for step in steps:
             tts.speak(step["text"])
-            # Wait for user response (handled by main loop)
-            break  # First step only, rest handled interactively
+            break
 
     elif event.trigger_id == "daily-briefing":
         status = sys_settings.get_system_status_audio()
-        nc.notify("system", "Daily Briefing", status)
+        nc.notify(NotificationCategory.SYSTEM, "Daily Briefing", status)
 
     elif event.trigger_id == "email-check":
-        # Email check is handled by the main loop when user says "check email"
-        pass
+        try:
+            mail_client = ctx.get('mail_client')
+            if mail_client:
+                from credential_vault import get_vault
+                vault = get_vault()
+                creds = vault.get("email")
+                if creds:
+                    count = mail_client.fetch_inbox(
+                        creds.get("imap_server", ""),
+                        creds.get("username", ""),
+                        creds.get("password", ""),
+                        limit=5
+                    )
+                    if count:
+                        nc.notify(NotificationCategory.SYSTEM, "New Email",
+                                  f"You have {len(count)} new emails.")
+                else:
+                    nc.notify(NotificationCategory.SYSTEM, "Email Check",
+                              "No email credentials stored. Say 'store credential' to set up email.")
+        except Exception as e:
+            nc.notify(NotificationCategory.SYSTEM, "Email Error",
+                      f"Could not check email: {str(e)[:50]}")
 
     elif event.trigger_id == "system-health":
         try:
@@ -100,12 +435,15 @@ def handle_trigger_event(event):
                 with open("/sys/class/power_supply/BAT0/capacity") as f:
                     bat = int(f.read().strip())
                 if bat < 20:
-                    nc.notify("system", "Low Battery", f"Battery is at {bat} percent. Please charge.", priority=2)
+                    nc.notify(NotificationCategory.SYSTEM, "Low Battery",
+                              f"Battery is at {bat} percent. Please charge.",
+                              priority=NotificationPriority.HIGH)
         except Exception:
             pass
 
     elif event.trigger_id == "backup-reminder":
-        nc.notify("system", "Backup Reminder", "Time to back up your important files.")
+        nc.notify(NotificationCategory.REMINDER, "Backup Reminder",
+                  "Time to back up your important files.")
 
     elif event.trigger_id == "idle-reminder":
         nc.flush()
@@ -115,529 +453,58 @@ def handle_trigger_event(event):
         path = data.get("path", "")
         new_files = data.get("new_files", [])
         if new_files:
-            nc.notify("system", "New Files", f"New files in {os.path.basename(path)}: {', '.join(new_files[:3])}")
-
-
-def execute_action(intent, user_speech=""):
-    """Execute action payloads generated by the AI Intent Router or Audio Command Navigator."""
-    global current_mode
-    action = intent.get("action", "speak")
-    speech = intent.get("speech", "")
-    target = intent.get("target", "")
-
-    low_speech = user_speech.lower() if user_speech else speech.lower()
-
-    # 0. Wake Word Mode Toggle
-    if "wake word" in low_speech:
-        if "enable" in low_speech or "on" in low_speech:
-            msg = wakeword.toggle_wake_word(True)
-        elif "disable" in low_speech or "off" in low_speech:
-            msg = wakeword.toggle_wake_word(False)
-        else:
-            msg = wakeword.toggle_wake_word()
-        play_earcon("success")
-        tts.speak(msg)
-        return
-
-    # 1. AT-SPI2 Screen Summary Request Handler (COMMAND:SCREEN_SUMMARY)
-    if action == "screen_summary" or "screen" in low_speech or target == "COMMAND:SCREEN_SUMMARY":
-        play_earcon("success")
-        if speech:
-            tts.speak(speech)
-        else:
-            summary = screen_reader.generate_screen_summary_payload()
-            tts.speak(f"Screen summary: {summary[:300]}")
-        return
-
-    # 2. Global Audio Help & Command Navigation Prompts
-    if any(h_word in low_speech for h_word in ["help", "what can i say", "commands", "what can i do"]):
-        play_earcon("success")
-        tts.speak(navigator.get_audio_help(current_mode))
-        return
-
-    if any(m_word in low_speech for m_word in ["main menu", "menu", "navigation menu", "categories"]):
-        play_earcon("success")
-        tts.speak(navigator.get_main_menu_audio())
-        return
-
-    # Check numerical / menu navigation selections
-    new_mode, menu_speech = navigator.select_menu_option(low_speech)
-    if new_mode:
-        current_mode = new_mode
-        play_earcon("success")
-        tts.speak(menu_speech)
-        return
-
-    if speech:
-        tts.speak(speech)
-
-    try:
-        target_lower = target.lower() if target else speech.lower()
-
-        # Mode Switching
-        if action == "switch_mode" or "switch to" in target_lower:
-            if "browser" in target_lower or "web" in target_lower:
-                current_mode = "BROWSER"
-            elif "email" in target_lower or "mail" in target_lower:
-                current_mode = "EMAIL"
-            elif "ide" in target_lower or "code" in target_lower:
-                current_mode = "IDE"
-            elif "file" in target_lower or "folder" in target_lower:
-                current_mode = "FILES"
-            elif "doc" in target_lower or "writer" in target_lower:
-                current_mode = "DOCS"
-            elif "book" in target_lower or "ebook" in target_lower:
-                current_mode = "EBOOK"
-            elif "setting" in target_lower or "status" in target_lower:
-                current_mode = "SETTINGS"
-            else:
-                current_mode = "DESKTOP"
-
-            play_earcon("success")
-            tts.speak(navigator.get_audio_help(current_mode))
-            return
-
-        # Audio EBook Reader Handlers
-        if current_mode == "EBOOK" or action == "ebook_action":
-            if "open" in target_lower or "load" in target_lower:
-                bname = target.replace("open book", "").replace("open", "").replace("load", "").strip() or "/tmp/sample_book.txt"
-                tts.speak(ebook_reader.load_book(bname))
-            elif "chapter" in target_lower and any(char.isdigit() for char in target):
-                nums = [int(s) for s in target.split() if s.isdigit()]
-                if nums:
-                    tts.speak(ebook_reader.read_chapter_audio(nums[0]))
-            elif "list" in target_lower or "table of contents" in target_lower:
-                tts.speak(ebook_reader.list_chapters_audio())
-            elif "next" in target_lower:
-                tts.speak(ebook_reader.next_chapter_audio())
-            elif "previous" in target_lower or "prev" in target_lower:
-                tts.speak(ebook_reader.previous_chapter_audio())
-            elif "bookmark" in target_lower:
-                if "set" in target_lower:
-                    tts.speak(ebook_reader.set_bookmark())
-                else:
-                    tts.speak(ebook_reader.read_bookmark())
-            elif "search" in target_lower:
-                q = target.replace("search for", "").replace("search", "").strip()
-                tts.speak(ebook_reader.search_book_audio(q))
-            else:
-                tts.speak(ebook_reader.list_chapters_audio())
-            play_earcon("success")
-            return
-
-        # Audio Document Writer Handlers
-        if current_mode == "DOCS" or action == "doc_action":
-            if "new" in target_lower or "create" in target_lower:
-                doc_title = target.replace("new document", "").replace("new doc", "").replace("create", "").strip() or "Untitled"
-                tts.speak(doc_writer.start_new_doc(doc_title))
-            elif "heading" in target_lower:
-                h_text = target.replace("add heading", "").replace("heading", "").strip()
-                tts.speak(doc_writer.add_heading(h_text))
-            elif "paragraph" in target_lower or "text" in target_lower:
-                p_text = target.replace("add paragraph", "").replace("paragraph", "").replace("text", "").strip()
-                tts.speak(doc_writer.add_paragraph(p_text))
-            elif "read" in target_lower or "draft" in target_lower:
-                tts.speak(doc_writer.read_draft_audio())
-            elif "export" in target_lower or "save" in target_lower:
-                tts.speak(doc_writer.export_all_formats())
-            elif "dropbox" in target_lower or "cloud" in target_lower or "share" in target_lower:
-                tts.speak(doc_writer.share_to_dropbox_or_cloud())
-            else:
-                tts.speak(doc_writer.read_draft_audio())
-            play_earcon("success")
-            return
-
-        # Audio System Settings & Status Handlers
-        if current_mode == "SETTINGS" or action == "setting_action":
-            if "status" in target_lower or "battery" in target_lower or "time" in target_lower:
-                tts.speak(sys_settings.get_system_status_audio())
-            elif "volume up" in target_lower or "louder" in target_lower:
-                tts.speak(sys_settings.volume_up())
-            elif "volume down" in target_lower or "quieter" in target_lower:
-                tts.speak(sys_settings.volume_down())
-            elif "timer" in target_lower:
-                nums = [int(s) for s in target.split() if s.isdigit()]
-                mins = nums[0] if nums else 5
-                tts.speak(sys_settings.set_timer(mins, callback_tts=tts))
-            else:
-                tts.speak(sys_settings.get_system_status_audio())
-            play_earcon("success")
-            return
-
-        # Audio IDE Mode Handlers — AI Assistant, Git, Terminal, Earcons, IDE Daemon
-        if current_mode == "IDE" or action == "ide_action":
-            # --- AI Assistant commands ---
-            if "fix this" in low_speech or "fix code" in low_speech or "fix error" in low_speech:
-                play_earcon("warning")
-                if ide.active_file and os.path.exists(ide.active_file):
-                    with open(ide.active_file, "r") as f:
-                        code = f.read()
-                    # Extract error from speech if present
-                    error_text = low_speech.replace("fix this", "").replace("fix code", "").replace("fix error", "").strip()
-                    result = ai_assistant.fix_code(code, error=error_text)
-                    tts.speak("Code fix attempted. " + result[:200])
-                else:
-                    tts.speak("No active file loaded. Say 'open code filename' first.")
-                play_earcon("success")
-                return
-
-            if "explain this" in low_speech or "explain code" in low_speech or "what does this do" in low_speech:
-                play_earcon("info")
-                if ide.active_file and os.path.exists(ide.active_file):
-                    with open(ide.active_file, "r") as f:
-                        code = f.read()
-                    result = ai_assistant.explain_code(code)
-                    tts.speak(result)
-                else:
-                    tts.speak("No active file loaded.")
-                play_earcon("success")
-                return
-
-            if "generate tests" in low_speech or "write tests" in low_speech or "add tests" in low_speech:
-                play_earcon("info")
-                if ide.active_file and os.path.exists(ide.active_file):
-                    with open(ide.active_file, "r") as f:
-                        code = f.read()
-                    func_name = low_speech.replace("generate tests for", "").replace("write tests for", "").replace("generate tests", "").replace("write tests", "").strip() or "main"
-                    result = ai_assistant.write_test(code, func_name)
-                    tts.speak("Tests generated. " + result[:200])
-                else:
-                    tts.speak("No active file loaded.")
-                play_earcon("success")
-                return
-
-            if "review code" in low_speech or "review this" in low_speech:
-                play_earcon("info")
-                if ide.active_file and os.path.exists(ide.active_file):
-                    with open(ide.active_file, "r") as f:
-                        code = f.read()
-                    result = ai_assistant.review_code(code)
-                    tts.speak(result)
-                else:
-                    tts.speak("No active file loaded.")
-                play_earcon("success")
-                return
-
-            if "optimize code" in low_speech or "optimize this" in low_speech:
-                play_earcon("info")
-                if ide.active_file and os.path.exists(ide.active_file):
-                    with open(ide.active_file, "r") as f:
-                        code = f.read()
-                    result = ai_assistant.optimize_code(code)
-                    tts.speak("Optimization attempted. " + result[:200])
-                else:
-                    tts.speak("No active file loaded.")
-                play_earcon("success")
-                return
-
-            if "add docstring" in low_speech or "generate docstring" in low_speech:
-                play_earcon("info")
-                if ide.active_file and os.path.exists(ide.active_file):
-                    with open(ide.active_file, "r") as f:
-                        code = f.read()
-                    result = ai_assistant.add_docstring(code)
-                    tts.speak("Docstring added. " + result[:200])
-                else:
-                    tts.speak("No active file loaded.")
-                play_earcon("success")
-                return
-
-            if "add type hints" in low_speech or "add type annotations" in low_speech:
-                play_earcon("info")
-                if ide.active_file and os.path.exists(ide.active_file):
-                    with open(ide.active_file, "r") as f:
-                        code = f.read()
-                    result = ai_assistant.add_type_hints(code)
-                    tts.speak("Type hints added. " + result[:200])
-                else:
-                    tts.speak("No active file loaded.")
-                play_earcon("success")
-                return
-
-            if "refactor code" in low_speech or "refactor this" in low_speech:
-                play_earcon("info")
-                if ide.active_file and os.path.exists(ide.active_file):
-                    with open(ide.active_file, "r") as f:
-                        code = f.read()
-                    target = low_speech.replace("refactor code to", "").replace("refactor code", "").replace("refactor this to", "").replace("refactor this", "").strip() or "improve structure"
-                    result = ai_assistant.refactor_code(code, target)
-                    tts.speak("Refactoring attempted. " + result[:200])
-                else:
-                    tts.speak("No active file loaded.")
-                play_earcon("success")
-                return
-
-            # --- Git commands ---
-            if "git status" in low_speech or "git changes" in low_speech:
-                play_earcon("git_modified")
-                result = git_engine.status()
-                tts.speak(result)
-                play_earcon("success")
-                return
-
-            if "git diff" in low_speech:
-                play_earcon("git_modified")
-                filepath = low_speech.replace("git diff", "").strip()
-                result = git_engine.diff(filepath if filepath else None)
-                tts.speak(result)
-                play_earcon("success")
-                return
-
-            if "git log" in low_speech or "git history" in low_speech:
-                play_earcon("info")
-                result = git_engine.log()
-                tts.speak(result)
-                play_earcon("success")
-                return
-
-            if "git branch" in low_speech or "current branch" in low_speech:
-                play_earcon("info")
-                result = git_engine.branch()
-                tts.speak(result)
-                play_earcon("success")
-                return
-
-            if "git commit" in low_speech:
-                play_earcon("git_added")
-                message = low_speech.replace("git commit", "").replace("commit", "").strip()
-                if not message:
-                    message = "Voice commit from Artome IDE"
-                result = git_engine.commit(message)
-                tts.speak(result)
-                play_earcon("success")
-                return
-
-            if "git push" in low_speech:
-                play_earcon("git_added")
-                result = git_engine.push()
-                tts.speak(result)
-                play_earcon("success")
-                return
-
-            if "git pull" in low_speech:
-                play_earcon("info")
-                result = git_engine.pull()
-                tts.speak(result)
-                play_earcon("success")
-                return
-
-            if "git switch" in low_speech or "checkout branch" in low_speech:
-                play_earcon("info")
-                branch = low_speech.replace("git switch to", "").replace("git switch", "").replace("checkout branch", "").replace("switch to branch", "").strip()
-                if branch:
-                    result = git_engine.switch_branch(branch)
-                    tts.speak(result)
-                else:
-                    tts.speak("Which branch? Say 'git switch to branch-name'.")
-                play_earcon("success")
-                return
-
-            # --- Terminal commands ---
-            if "run tests" in low_speech or "run test" in low_speech:
-                play_earcon("info")
-                test_path = low_speech.replace("run tests in", "").replace("run tests", "").replace("run test in", "").replace("run test", "").strip()
-                result = terminal_engine.run_tests(test_path if test_path else None)
-                tts.speak(result[:300])
-                play_earcon("success")
-                return
-
-            if "run file" in low_speech or "run this file" in low_speech:
-                play_earcon("info")
-                if ide.active_file and os.path.exists(ide.active_file):
-                    result = terminal_engine.run_file(ide.active_file)
-                    tts.speak(result[:300])
-                else:
-                    tts.speak("No active file loaded. Say 'open code filename' first.")
-                play_earcon("success")
-                return
-
-            if "run make" in low_speech or "run build" in low_speech or "make build" in low_speech:
-                play_earcon("info")
-                cmd = low_speech.replace("run make", "make").replace("run build", "make build").strip()
-                result = terminal_engine.run(cmd, timeout=120)
-                tts.speak(result[:300])
-                play_earcon("success")
-                return
-
-            if "run command" in low_speech or "run" in low_speech:
-                cmd = low_speech.replace("run command", "").replace("run", "").strip()
-                if cmd and len(cmd) > 2:
-                    play_earcon("info")
-                    result = terminal_engine.run(cmd)
-                    tts.speak(result[:300])
-                    play_earcon("success")
-                    return
-
-            if "stop" in low_speech or "cancel" in low_speech or "interrupt" in low_speech:
-                play_earcon("warning")
-                result = terminal_engine.stop()
-                tts.speak(result)
-                play_earcon("success")
-                return
-
-            if "show terminal" in low_speech or "terminal output" in low_speech:
-                play_earcon("info")
-                result = terminal_engine.show_terminal()
-                tts.speak(result[:300])
-                play_earcon("success")
-                return
-
-            if "clear terminal" in low_speech:
-                play_earcon("info")
-                result = terminal_engine.clear_terminal()
-                tts.speak(result)
-                play_earcon("success")
-                return
-
-            # --- IDE daemon commands ---
-            if "ide structure" in low_speech or "code structure" in low_speech:
-                play_earcon("info")
-                try:
-                    from artome_ide import get_structure
-                    result = get_structure()
-                    tts.speak(result[:300])
-                except Exception as e:
-                    tts.speak(f"IDE daemon error: {str(e)[:40]}")
-                play_earcon("success")
-                return
-
-            if "ide summary" in low_speech or "code summary" in low_speech:
-                play_earcon("info")
-                try:
-                    from artome_ide import get_summary
-                    result = get_summary()
-                    tts.speak(result[:300])
-                except Exception as e:
-                    tts.speak(f"IDE daemon error: {str(e)[:40]}")
-                play_earcon("success")
-                return
-
-            if "where am i" in low_speech or "cursor position" in low_speech:
-                play_earcon("info")
-                try:
-                    from artome_ide import where_am_i
-                    result = where_am_i()
-                    tts.speak(result)
-                except Exception as e:
-                    tts.speak(f"IDE daemon error: {str(e)[:40]}")
-                play_earcon("success")
-                return
-
-            # --- Original IDE commands ---
-            if "open" in target_lower or "load" in target_lower:
-                filename = target.replace("open code", "").replace("open", "").replace("load", "").strip() or "artome_core.py"
-                play_earcon("scope_enter_function")
-                tts.speak(ide.load_file(filename))
-            elif "function" in target_lower or "def" in target_lower:
-                func_name = target.replace("read function", "").replace("function", "").strip()
-                play_earcon("scope_enter_function")
-                tts.speak(ide.read_function(func_name))
-            elif "line" in target_lower or "lines" in target_lower:
-                play_earcon("info")
-                tts.speak(ide.read_lines(start_line=1, count=10))
-            else:
-                play_earcon("scope_enter_function")
-                tts.speak(ide.load_file("artome_core.py"))
-            play_earcon("success")
-            return
-
-        # Audio File Browser Handlers
-        if current_mode == "FILES" or action == "file_action":
-            low_user_speech = user_speech.lower() if user_speech else ""
-            
-            # Robust voice fallback overrides
-            if "search" in low_user_speech or "find" in low_user_speech:
-                q = low_user_speech.replace("search for", "").replace("search file", "").replace("search", "").replace("find file", "").replace("find", "").strip()
-                tts.speak(file_browser.search_files_audio(q))
-            elif "duplicate" in low_user_speech or "dups" in low_user_speech:
-                tts.speak(file_browser.get_duplicates_audio())
-            elif "index" in low_user_speech or "scan" in low_user_speech:
-                folder = low_user_speech.replace("index folder", "").replace("index directory", "").replace("index", "").replace("scan folder", "").replace("scan directory", "").replace("scan", "").strip() or file_browser.cwd
-                tts.speak(file_browser.index_directory_audio(folder))
-            elif "where" in target_lower or "location" in target_lower or "where am i" in low_user_speech:
-                tts.speak(file_browser.get_location_audio())
-            elif "list" in target_lower or "show" in target_lower or "list" in low_user_speech:
-                tts.speak(file_browser.list_contents_audio())
-            elif "read" in target_lower or "view" in target_lower or "read file" in low_user_speech:
-                fname = target.replace("read file", "").replace("read", "").strip() if target else low_user_speech.replace("read file", "").replace("read", "").strip()
-                tts.speak(file_browser.read_file_audio(fname))
-            elif "cd" in target_lower or "go to" in target_lower or "enter" in target_lower or any(w in low_user_speech for w in ["go to", "enter", "cd"]):
-                folder = target.replace("go to", "").replace("enter", "").replace("cd", "").strip() if target else low_user_speech.replace("go to", "").replace("enter", "").replace("cd", "").strip()
-                tts.speak(file_browser.change_dir(folder))
-            else:
-                tts.speak(file_browser.list_contents_audio())
-            play_earcon("success")
-            return
-
-        # Audio Browser Handlers
-        if current_mode == "BROWSER" or action == "web_navigate":
-            if "search" in target_lower or "search" in speech.lower():
-                query = target.replace("search for", "").replace("search", "").strip() or speech
-                tts.speak(browser.search(query))
-            elif target.startswith("http") or "." in target:
-                tts.speak(browser.load_url(target))
-            elif "heading" in target_lower or "headings" in speech.lower():
-                tts.speak(browser.get_headings_audio())
-            elif "link" in target_lower or "links" in speech.lower():
-                tts.speak(browser.get_links_audio())
-            elif "click" in target_lower or "click" in speech.lower():
-                nums = [int(s) for s in target.split() if s.isdigit()]
-                if nums:
-                    tts.speak(browser.click_link_by_index(nums[0]))
-            play_earcon("success")
-            return
-
-        # Audio Email Handlers
-        if current_mode == "EMAIL" or action == "email_action":
-            if "check" in target_lower or "inbox" in target_lower:
-                tts.speak("Checking email inbox... You have 2 unread emails.")
-            elif "read" in target_lower:
-                tts.speak(mail_client.read_email_audio(1))
-            play_earcon("success")
-            return
-
-        # Desktop System Actions
-        if action == "open_app" and target:
-            subprocess.Popen([target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            play_earcon("success")
-        elif action == "type_text" and target:
-            subprocess.run(["xdotool", "type", target])
-            play_earcon("success")
-        elif action == "press_key" and target:
-            subprocess.run(["xdotool", "key", target])
-            play_earcon("success")
-        elif action == "run_cmd" and target:
-            res = subprocess.check_output(target, shell=True, stderr=subprocess.STDOUT, text=True)
-            if res.strip():
-                tts.speak(res.strip()[:250])
-            play_earcon("success")
-        elif action == "speak":
-            play_earcon("success")
-        else:
-            play_earcon("success")
-
-    except Exception as e:
-        print(f"Execution Error: {e}")
-        play_earcon("error")
-        tts.speak(f"Action error: {str(e)[:40]}")
+            nc.notify(NotificationCategory.SYSTEM, "New Files",
+                      f"New files in {os.path.basename(path)}: {', '.join(new_files[:3])}")
 
 
 def run_artome():
     """Artome OS Main Daemon Loop."""
+    from earcons import play_earcon
+    from intent_router import ask_artome_ai
+    from artome_ide import start_daemon, stop_daemon
+
+    ctx = _init_all()
+
+    current_mode = "DESKTOP"
+
+    ctx['trigger_engine'].on_event(lambda event: handle_trigger_event(event, ctx))
+    ctx['trigger_engine'].start()
+    if not ctx['trigger_engine'].is_onboarding_complete():
+        print("First run detected — onboarding will start on first interaction.")
+
+    if start_daemon():
+        print("aether-ide-daemon started and socket ready.")
+    else:
+        print("aether-ide-daemon not started (binary missing or socket timeout).")
+
+    def _shutdown_handler(signum, frame):
+        print("\nShutdown signal received — stopping IDE daemon...")
+        ctx['power_mgr'].cancel()
+        ctx['state_mgr'].save()
+        stop_daemon()
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, _shutdown_handler)
+    signal.signal(signal.SIGINT, _shutdown_handler)
+
+    saved_mode = ctx['state_mgr'].get_mode()
+    if saved_mode and saved_mode != "DESKTOP":
+        current_mode = saved_mode
+        print(f"Restored mode: {current_mode}")
+
     play_earcon("success")
-    tts.speak("Artome desktop environment ready with TTS barge-in and AT-SPI2 screen reader.")
+    ctx['tts'].speak("Artome desktop environment ready with TTS barge-in and AT-SPI2 screen reader.")
 
     fallback_mode = False
     while True:
         try:
             if not fallback_mode:
                 try:
-                    # Pass tts engine into listener for continuous Barge-In interruption monitoring!
-                    audio_data = listener.listen(max_duration_sec=12, tts_engine=tts)
+                    audio_data = ctx['listener'].listen(max_duration_sec=12, tts_engine=ctx['tts'])
                     if audio_data is None:
                         continue
 
-                    segments, _ = whisper_model.transcribe(audio_data, beam_size=5)
+                    segments, _ = ctx['whisper_model'].transcribe(audio_data, beam_size=5)
                     raw_user_text = " ".join([seg.text for seg in segments]).strip()
                 except Exception as e:
                     print(f"ALSA/Sound device initialization failed: {e}")
@@ -656,12 +523,11 @@ def run_artome():
             if not raw_user_text:
                 continue
 
-            # In console fallback mode, bypass wake word checking to allow direct command input
             if fallback_mode:
                 active_command = raw_user_text
                 is_activated = True
             else:
-                is_activated, active_command = wakeword.check_wake_word(raw_user_text)
+                is_activated, active_command = ctx['wakeword'].check_wake_word(raw_user_text)
 
             if not is_activated:
                 continue
@@ -669,28 +535,34 @@ def run_artome():
             play_earcon("listening")
 
             if not active_command:
-                tts.speak("Yes?")
+                ctx['tts'].speak("Yes?")
                 continue
 
             print(f"\n[{current_mode}] COMMAND: {active_command}")
 
-            if any(word in active_command.lower() for word in ["exit", "quit", "shutdown", "stop"]):
+            cmd_lower = active_command.lower().strip()
+            exit_phrases = {"exit", "quit", "stop", "shut down", "power off", "log out", "goodbye"}
+            is_exit = cmd_lower in exit_phrases or any(cmd_lower.startswith(p) for p in exit_phrases)
+            if is_exit:
+                ctx['power_mgr'].cancel()
                 play_earcon("success")
-                tts.speak("Shutting down Artome OS. Goodbye.")
+                ctx['tts'].speak("Shutting down Artome OS. Goodbye.")
                 break
 
             intent = ask_artome_ai(active_command, mode=current_mode)
             print(f"[{current_mode}] INTENT: {intent}")
 
-            execute_action(intent, user_speech=active_command)
+            current_mode = execute_action(intent, active_command, current_mode, ctx)
 
         except KeyboardInterrupt:
+            ctx['power_mgr'].cancel()
             play_earcon("error")
-            tts.speak("Artome stopped.")
+            ctx['tts'].speak("Artome stopped.")
             break
         except Exception as e:
             print(f"Core Loop Error: {e}")
             play_earcon("error")
+
 
 if __name__ == "__main__":
     run_artome()

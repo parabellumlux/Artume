@@ -3,9 +3,7 @@
 Provides voice-driven terminal operations through the IDE.
 """
 
-import asyncio
 import subprocess
-import sys
 from typing import Optional
 
 
@@ -53,7 +51,7 @@ class TerminalEngine:
         if filepath.endswith(".py"):
             return self.run(f"python3 {filepath}")
         elif filepath.endswith(".rs"):
-            return self.run(f"cargo run --release 2>&1 || cargo run 2>&1")
+            return self.run("cargo run --release 2>&1 || cargo run 2>&1")
         elif filepath.endswith(".sh"):
             return self.run(f"bash {filepath}")
         elif filepath.endswith(".js") or filepath.endswith(".mjs"):

@@ -5,7 +5,6 @@ Generates WAV files using sine wave synthesis.
 """
 
 import math
-import os
 import struct
 import wave
 from pathlib import Path

@@ -3,10 +3,9 @@
 Uses XDG desktop files and xdg-open for application management.
 """
 
-import os
 import subprocess
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 
 class AppInfo:

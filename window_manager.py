@@ -4,7 +4,6 @@ List, focus, minimize, maximize, close windows via xdotool and wmctrl.
 """
 
 import subprocess
-import re
 from typing import List, Optional
 
 
