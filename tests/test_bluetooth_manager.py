@@ -41,7 +41,7 @@ class TestConnect:
     @patch.object(BluetoothManager, "_run")
     @patch("bluetooth_manager.subprocess.run")
     def test_connect_success(self, mock_run_sub, mock_run, bm):
-        mock_run.side_effect = [MOCK_BLUETOOTH_OUTPUT, "Connected: no"]
+        mock_run.side_effect = [MOCK_BLUETOOTH_OUTPUT, "Connected: no", "Connected: no", "Connected: no"]
         mock_run_sub.return_value = MagicMock(stdout="Connection successful")
         result = bm.connect("headphones")
         assert "connected" in result.lower()
@@ -58,7 +58,7 @@ class TestDisconnect:
     @patch.object(BluetoothManager, "_run")
     @patch("bluetooth_manager.subprocess.run")
     def test_disconnect(self, mock_run_sub, mock_run, bm):
-        mock_run.side_effect = [MOCK_BLUETOOTH_OUTPUT, "Connected: yes"]
+        mock_run.side_effect = [MOCK_BLUETOOTH_OUTPUT, "Connected: yes", "Connected: yes", "Connected: yes"]
         mock_run_sub.return_value = MagicMock()
         result = bm.disconnect("headphones")
         assert "disconnected" in result.lower()

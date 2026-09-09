@@ -1,5 +1,5 @@
 """Persistent state manager for Artume OS - saves/loads application state across restarts."""
-import json, os, threading, time
+import copy, json, os, threading, time
 from pathlib import Path
 
 _DEFAULT_STATE = {"mode": "DESKTOP", "active_file": None, "recent_files": [], "bookmarks": {}, "preferences": {}}
@@ -21,7 +21,7 @@ class StateManager:
         self._lock = threading.RLock()
         self._state_dir = Path(state_dir or os.path.expanduser("~/.config/artume/state/"))
         self._state_file = self._state_dir / "app_state.json"
-        self._state = dict(_DEFAULT_STATE)
+        self._state = copy.deepcopy(_DEFAULT_STATE)
         self._last_save = 0.0
         self._save_timer = None
         self._state_dir.mkdir(parents=True, exist_ok=True)

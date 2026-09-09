@@ -12,9 +12,9 @@ def wm():
     return WindowManager()
 
 
-MOCK_WMCTRL_OUTPUT = """0x04000007  0 terminal  hostname Terminal
-0x04000008  0 browser  hostname Firefox
-0x04000009  1 code     hostname VS Code"""
+MOCK_WMCTRL_OUTPUT = """0x04000007  0 host Terminal
+0x04000008  0 host Firefox
+0x04000009  1 host VS Code"""
 
 
 class TestListWindows:

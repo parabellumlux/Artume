@@ -42,6 +42,8 @@ class PowerManager:
                     return "Screen locked."
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 continue
+            except Exception:
+                continue
         return "Could not lock screen."
 
     def cancel(self) -> str:

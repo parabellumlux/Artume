@@ -59,10 +59,10 @@ class TestIdeClientCall:
         mock_socket_cls.return_value = mock_sock
         mock_sock.recv.side_effect = [
             _make_jsonrpc_response({}),
-            b"",
             _make_jsonrpc_response({}),
-            b"",
         ]
+        client.get_structure()
+        assert client._id == 1
         client.get_structure()
         assert client._id == 2
 
