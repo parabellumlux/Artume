@@ -14,6 +14,38 @@ def _cursor_position():
         return (0, 0)
 
 
+def _check_file_errors(filepath):
+    """Compile and statically lint a Python file, returning a spoken summary."""
+    import io
+    import py_compile
+
+    try:
+        py_compile.compile(filepath, doraise=True)
+    except py_compile.PyCompileError as e:
+        return f"Syntax error: {e}"
+
+    try:
+        from pyflakes.api import checkPath
+        from pyflakes.reporter import Reporter
+        stream = io.StringIO()
+        reporter = Reporter(stream, stream)
+        try:
+            checkPath(filepath, reporter, encoding="utf-8")
+        except TypeError:
+            checkPath(filepath, reporter)
+        issues = stream.getvalue().strip().splitlines()
+    except ImportError:
+        return "No syntax errors."
+
+    if not issues:
+        return "No errors found."
+    head = issues[:5]
+    summary = ". ".join(i.split(":", 2)[-1].strip() for i in head)
+    if len(issues) > 5:
+        summary += f". And {len(issues) - 5} more issues."
+    return f"{len(issues)} issues found. {summary}"
+
+
 def handle(low_speech, target_lower, target, ctx):
     """Handle IDE mode commands. Returns True if handled."""
     tts = ctx['tts']
@@ -482,6 +514,34 @@ def handle(low_speech, target_lower, target, ctx):
             tts.speak(f"IDE daemon error: {str(e)[:40]}")
         play_earcon("success")
         return True
+
+    if any(kw in low_speech for kw in ["show errors", "show diagnostics", "check errors",
+                                        "any errors", "find errors", "list errors"]):
+        play_earcon("warning")
+        if ide.active_file and os.path.exists(ide.active_file):
+            try:
+                result = _check_file_errors(ide.active_file)
+            except Exception as e:
+                result = f"Error check failed: {str(e)[:40]}"
+            tts.speak(result)
+        else:
+            tts.speak("No active file loaded.")
+        play_earcon("success")
+        return True
+
+    if "go to function" in low_speech or "jump to function" in low_speech or \
+            ("function" in low_speech and any(w in low_speech for w in ["go to", "jump to", "find"])):
+        import re
+        name = re.sub(r'^(go to|jump to|find)\s+function\s*', '', low_speech).strip()
+        if name:
+            play_earcon("info")
+            try:
+                from artome_ide import go_to_function
+                tts.speak(go_to_function(name))
+            except Exception as e:
+                tts.speak(f"IDE daemon error: {str(e)[:40]}")
+            play_earcon("found_match")
+            return True
 
     if "where am i" in low_speech or "cursor position" in low_speech:
         play_earcon("info")

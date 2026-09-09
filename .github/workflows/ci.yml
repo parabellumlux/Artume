@@ -64,7 +64,7 @@ jobs:
             ${{ runner.os }}-pip-
 
       - name: Install dependencies
-        run: pip install pytest numpy sounddevice requests html2text cryptography
+        run: pip install pytest numpy sounddevice requests html2text cryptography pyflakes
 
       - name: Run tests
         run: python -m pytest tests/ -v
