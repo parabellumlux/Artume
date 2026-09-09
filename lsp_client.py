@@ -190,6 +190,7 @@ class DAPClient:
         self._sock = None
         self._seq = 0
         self._running = False
+        self._stopped_thread = 1
 
     def connect(self) -> bool:
         """Connect to the debug adapter."""
@@ -265,6 +266,9 @@ class DAPClient:
             if resp is None:
                 return None
             if resp.get("type") == "event":
+                if resp.get("event") == "stopped":
+                    body = resp.get("body") or {}
+                    self._stopped_thread = int(body.get("threadId", 1))
                 continue
             return resp.get("body", resp)
 
@@ -312,6 +316,44 @@ class DAPClient:
         """Step out of function."""
         result = self._send("stepOut", {"threadId": 1})
         return "Stepping out." if result else "Failed to step."
+
+    def pause(self) -> str:
+        """Pause execution on the stopped thread (or the main one)."""
+        result = self._send("pause", {"threadId": self._stopped_thread})
+        return "Paused." if result is not None else "Failed to pause."
+
+    def stack_trace(self) -> list:
+        """Return the current stack frames (empty when not paused)."""
+        result = self._send("stackTrace", {"threadId": self._stopped_thread})
+        return (result or {}).get("stackFrames", [])
+
+    def where(self) -> str:
+        """Describe the current debugger position as spoken text."""
+        frames = self.stack_trace()
+        if not frames:
+            return "The debugger is not paused. Set a breakpoint or step into code."
+        top = frames[0]
+        line = int(top.get("line", 0))
+        src = (top.get("source") or {}).get("path", "?")
+        name = top.get("name", "main")
+        return f"Paused at line {line} in {name}, file {os.path.basename(src)}."
+
+    def list_locals(self) -> str:
+        """Speak the local variables of the top stack frame."""
+        scopes = self._send("scopes", {"frameId": 0})
+        scope_id = None
+        for s in (scopes or {}).get("scopes", []):
+            if s.get("name") == "Locals":
+                scope_id = int(s.get("variablesReference", 0))
+                break
+        if not scope_id:
+            return "No locals in scope."
+        vars_ = self._send("variables", {"variablesReference": scope_id})
+        names = (vars_ or {}).get("variables", [])[:12]
+        if not names:
+            return "No variables."
+        pairs = [f"{v.get('name', '?')} = {v.get('value', '?')}" for v in names]
+        return "Locals: " + ", ".join(pairs) + "."
 
     def evaluate(self, expression: str) -> str:
         """Evaluate expression in current stack frame."""

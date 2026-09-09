@@ -455,6 +455,10 @@ def handle(low_speech, target_lower, target, ctx):
         if client:
             result = client.step_over()
             tts.speak(result)
+            try:
+                tts.speak(client.where())
+            except Exception:
+                pass
             play_earcon("success")
             return True
         if "step" in low_speech:
@@ -470,6 +474,10 @@ def handle(low_speech, target_lower, target, ctx):
         if client:
             result = client.step_into()
             tts.speak(result)
+            try:
+                tts.speak(client.where())
+            except Exception:
+                pass
         else:
             tts.speak("No active debug session.")
         play_earcon("success")
@@ -482,6 +490,10 @@ def handle(low_speech, target_lower, target, ctx):
         if client:
             result = client.step_out()
             tts.speak(result)
+            try:
+                tts.speak(client.where())
+            except Exception:
+                pass
         else:
             tts.speak("No active debug session.")
         play_earcon("success")
@@ -499,6 +511,48 @@ def handle(low_speech, target_lower, target, ctx):
             else:
                 tts.speak("No active debug session.")
             play_earcon("success")
+        return True
+
+    if any(kw in low_speech for kw in ["list locals", "show locals", "local variables",
+                                       "inspect locals", "list variables",
+                                       "read locals"]):
+        play_earcon("info")
+        from debug_adapter import get_debug_adapter
+        client = get_debug_adapter().session_client()
+        if client:
+            tts.speak(client.list_locals())
+        else:
+            tts.speak("No active debug session.")
+        play_earcon("success")
+        return True
+
+    if any(kw in low_speech for kw in ["where is the debugger", "debugger position",
+                                       "debugger location", "pause position",
+                                       "where are we", "where is execution"]):
+        play_earcon("info")
+        from debug_adapter import get_debug_adapter
+        client = get_debug_adapter().session_client()
+        if client:
+            try:
+                tts.speak(client.where())
+            except Exception as e:
+                tts.speak(f"Debugger position error: {str(e)[:40]}")
+        else:
+            tts.speak("No active debug session.")
+        play_earcon("success")
+        return True
+
+    if any(kw in low_speech for kw in ["pause execution", "pause debugger",
+                                       "pause code", "hold execution",
+                                       "pause the debugger"]):
+        play_earcon("info")
+        from debug_adapter import get_debug_adapter
+        client = get_debug_adapter().session_client()
+        if client:
+            tts.speak(client.pause())
+        else:
+            tts.speak("No active debug session.")
+        play_earcon("success")
         return True
 
     # --- IDE daemon commands ---

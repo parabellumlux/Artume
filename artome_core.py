@@ -442,7 +442,7 @@ def execute_action(intent, user_speech, current_mode, ctx):
             return new_mode
 
         # IDE mode commands (checked last — most specific)
-        if current_mode == "IDE" or action == "ide_action":
+        if current_mode == "IDE" or action in ("ide_action", "dap_action"):
             if ide_handler.handle(low_speech, target_lower, target, ctx):
                 return current_mode
 

@@ -396,6 +396,19 @@ def _dispatch(label: str, text: str, mode: str) -> dict:
     if any(w in low for w in ["step out", "exit function", "return from"]):
         return {"action": "dap_action", "speech": "Stepping out", "target": "step_out"}
 
+    if any(w in low for w in ["list locals", "show locals", "local variables",
+                              "inspect locals", "list variables", "read locals"]):
+        return {"action": "dap_action", "speech": "Listing locals", "target": "list_locals"}
+
+    if any(w in low for w in ["where is the debugger", "debugger position",
+                              "debugger location", "pause position",
+                              "where are we", "where is execution"]):
+        return {"action": "dap_action", "speech": "Debugger position", "target": "where"}
+
+    if any(w in low for w in ["pause execution", "pause debugger", "pause code",
+                              "hold execution", "pause the debugger"]):
+        return {"action": "dap_action", "speech": "Pausing debugger", "target": "pause"}
+
     if any(w in low for w in ["evaluate", "inspect", "watch", "print variable"]):
         expr = re.sub(r'^(evaluate|inspect|watch|print variable)\s*', '', low)
         return {"action": "dap_action", "speech": f"Evaluating {expr}", "target": f"evaluate:{expr}"}
