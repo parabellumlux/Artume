@@ -12,6 +12,56 @@ class AudioFileBrowser:
 
     def __init__(self, initial_dir=None):
         self.cwd = initial_dir or os.path.dirname(os.path.abspath(__file__))
+        self._entries = []
+        self._entries_dir = None
+        self._selected_index = -1
+
+    def _refresh_entries(self):
+        """Cache (kind, name) entries for the current directory, dirs first."""
+        if self._entries_dir != self.cwd or not self._entries:
+            try:
+                entries = os.listdir(self.cwd)
+                dirs = sorted(e for e in entries
+                              if os.path.isdir(os.path.join(self.cwd, e)))
+                files = sorted(e for e in entries
+                               if os.path.isfile(os.path.join(self.cwd, e)))
+                self._entries = [("folder", d) for d in dirs] + \
+                                [("file", f) for f in files]
+            except Exception:
+                self._entries = []
+            self._entries_dir = self.cwd
+            if self._selected_index >= 0:
+                self._selected_index = min(self._selected_index,
+                                           max(0, len(self._entries) - 1))
+
+    def next_entry(self, step=1):
+        """Move the selection cursor to the next/previous entry and speak it."""
+        self._refresh_entries()
+        if not self._entries:
+            return "No entries in this directory."
+        total = len(self._entries)
+        current = self._selected_index
+        if current == -1:
+            if step < 0:
+                return "Already at the first entry."
+            target = 0
+        else:
+            target = max(0, min(total - 1, current + step))
+            if target == current:
+                edge = "last" if step > 0 else "first"
+                return f"Already at the {edge} entry."
+        self._selected_index = target
+        kind, name = self._entries[target]
+        return (f"{kind.capitalize()} {name}, "
+                f"{target + 1} of {total}.")
+
+    def go_up(self):
+        """Move to the parent directory and speak the new location."""
+        before = self.cwd
+        result = self.change_dir("..")
+        if self.cwd == before:
+            return result
+        return f"{result} {self.get_location_audio()}"
 
     def get_location_audio(self):
         """Spoken summary of current directory location."""
@@ -34,24 +84,33 @@ class AudioFileBrowser:
         except Exception as e:
             return f"Error reading directory: {str(e)[:50]}"
 
+    def _reset_entries(self):
+        """Clear the entry cache and selection after a directory change."""
+        self._entries = []
+        self._entries_dir = None
+        self._selected_index = -1
+
     def change_dir(self, target):
         """Navigate to a subdirectory or parent directory."""
         if target == ".." or "up" in target.lower() or "parent" in target.lower():
             parent = os.path.dirname(self.cwd)
             if parent and os.path.exists(parent):
                 self.cwd = parent
+                self._reset_entries()
                 return f"Moved up to {os.path.basename(self.cwd) or self.cwd}."
             return "Already at root directory."
 
         target_path = os.path.join(self.cwd, target)
         if os.path.exists(target_path) and os.path.isdir(target_path):
             self.cwd = target_path
+            self._reset_entries()
             return f"Entered folder {os.path.basename(target_path)}. " + self.list_contents_audio()
 
         # Case-insensitive match check
         for entry in os.listdir(self.cwd):
             if entry.lower() == target.lower() and os.path.isdir(os.path.join(self.cwd, entry)):
                 self.cwd = os.path.join(self.cwd, entry)
+                self._reset_entries()
                 return f"Entered folder {entry}. " + self.list_contents_audio()
 
         return f"Folder {target} not found."

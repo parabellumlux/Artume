@@ -502,6 +502,13 @@ def _mode_keywords(text: str, mode: str) -> dict:
     if mode == "FILES":
         if any(w in low for w in ["list", "show", "what", "contents", "files", "folders"]):
             return {"action": "file_action", "speech": "Listing directory contents", "target": "list_dir"}
+        if any(w in low for w in ["go up", "parent folder", "parent directory", "go back",
+                                   "up one level", "one level up"]):
+            return {"action": "file_action", "speech": "Moving up", "target": "go_up"}
+        if any(w in low for w in ["next file", "next folder", "next entry", "next",
+                                   "previous file", "previous folder", "previous entry",
+                                   "previous", "prev file", "prev folder", "prev entry", "prev"]):
+            return {"action": "file_action", "speech": "Moving to next file", "target": "navigate_entries"}
         if any(w in low for w in ["go to", "open", "enter", "cd", "change"]) and "folder" in low:
             return {"action": "file_action", "speech": f"Navigating to {text}", "target": f"change_dir:{text}"}
         if "read" in low or "open" in low:

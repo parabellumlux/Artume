@@ -144,6 +144,15 @@ def handle(low_speech, target_lower, target, speech, action, current_mode, ctx):
         elif "read" in target_lower or "view" in target_lower or "read file" in low_user_speech:
             fname = target.replace("read file", "").replace("read", "").strip() if target else low_user_speech.replace("read file", "").replace("read", "").strip()
             tts.speak(file_browser.read_file_audio(fname))
+        elif any(w in low_user_speech for w in ["next file", "next folder", "next entry",
+                                                 "next", "previous file", "previous folder",
+                                                 "previous entry", "previous", "prev file",
+                                                 "prev folder", "prev entry", "prev"]):
+            step = -1 if any(w in low_user_speech for w in ["previous", "prev"]) else 1
+            tts.speak(file_browser.next_entry(step))
+        elif any(w in low_user_speech for w in ["go up", "parent folder", "parent directory",
+                                                 "up one level", "go back", "one level up"]):
+            tts.speak(file_browser.go_up())
         elif "cd" in target_lower or "go to" in target_lower or "enter" in target_lower or any(w in low_user_speech for w in ["go to", "enter", "cd"]):
             folder = target.replace("go to", "").replace("enter", "").replace("cd", "").strip() if target else low_user_speech.replace("go to", "").replace("enter", "").replace("cd", "").strip()
             tts.speak(file_browser.change_dir(folder))
