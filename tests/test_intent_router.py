@@ -116,6 +116,23 @@ class TestModeKeywords:
         assert result.get("action") == "doc_action"
 
 
+class TestSpokenEditing:
+    def test_insert_line_routes_to_edit(self):
+        result = _dispatch("", "insert line return 0", "DESKTOP")
+        assert result["action"] == "ide_action"
+        assert result["target"] == "edit:insert line return 0"
+
+    def test_replace_line_routes_to_edit(self):
+        result = _dispatch("", "replace line 2 with x = 9", "DESKTOP")
+        assert result["action"] == "ide_action"
+        assert result["target"] == "edit:replace line 2 with x = 9"
+
+    def test_delete_lines_routes_to_edit(self):
+        result = _dispatch("", "delete lines 2 to 3", "IDE")
+        assert result["action"] == "ide_action"
+        assert result["target"] == "edit:delete lines 2 to 3"
+
+
 class TestClassifyPrompt:
     def test_contains_all_labels(self):
         prompt = _classify_prompt("test utterance")

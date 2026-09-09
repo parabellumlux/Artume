@@ -251,7 +251,10 @@ def _dispatch(label: str, text: str, mode: str) -> dict:
             return {"action": "file_op", "speech": f"Renaming {parts[0].strip()}", "target": f"rename:{parts[0].strip()}:{parts[1].strip()}"}
         return {"action": "file_op", "speech": "Rename requires old and new name", "target": "rename_help"}
 
-    if any(w in low for w in ["delete file", "delete ", "remove file", "remove "]):
+    if any(w in low for w in ["delete file", "delete ", "remove file", "remove "]) \
+            and not any(w in low for w in ["delete line", "delete lines",
+                                           "remove line", "remove lines",
+                                           "delete current line", "cut line"]):
         name = re.sub(r'^(delete file|delete|remove file|remove)\s*', '', low)
         return {"action": "file_op", "speech": f"Deleting {name}", "target": f"delete:{name}"}
 
@@ -359,6 +362,16 @@ def _dispatch(label: str, text: str, mode: str) -> dict:
                               "cursor position"]):
         return {"action": "ide_action", "speech": "IDE navigation",
                 "target": f"navigate:{text}"}
+
+    # --- Spoken editing (any mode, edit-in-place) ---
+    if any(w in low for w in ["insert line", "insert after", "insert before",
+                              "insert at line", "add line", "add new line",
+                              "replace line", "replace current line", "change line",
+                              "change current line", "rewrite line", "set line",
+                              "delete line", "remove line", "delete lines",
+                              "remove lines", "cut line"]):
+        return {"action": "ide_action", "speech": "Editing code",
+                "target": f"edit:{text}"}
 
     # --- DAP commands (debug, step, continue, breakpoint) ---
     if any(w in low for w in ["start debugging", "debug this", "debug file", "run debugger",

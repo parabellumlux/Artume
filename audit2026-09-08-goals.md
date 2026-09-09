@@ -89,7 +89,9 @@ Grading scale used: 🟢 verified working end-to-end · 🟡 works with external
 **OS (plan2026-08-20):**
 1. Wake with "Hey Artume" — 🟡 keyword-gated always-listening, not model-based.
 2. Email/web/files by voice — 🟡 works for open networks, read-only email; **compose/send missing**.
-3. Voice IDE read/edit with spatial audio — 🟡 read/navigate yes; **edit + spatial audio no**.
+3. Voice IDE read/edit with spatial audio — 🟡 read/navigate/edit yes
+   (spoken edit-in-place: insert/replace/delete lines, cursor-anchored, writes
+   the file); **spatial audio no**.
 4. Debug (breakpoints/step/inspect) — 🔴 **not functional** (no adapter lifecycle).
 5. Git / tests / terminal — 🟢.
 6. LSP navigation — 🟢 cursor-aware; routed through the daemon's persistent
@@ -101,7 +103,7 @@ Grading scale used: 🟢 verified working end-to-end · 🟡 works with external
     voice (vault + `capture_phrase`); the remaining gap is the true model
     wake-word (still keyword-gating already-transcribed text).
 
-**Audio IDE (PLAN_AUDIO_IDE §12, 10 criteria):** 1 open project 🟢 · 2 skim structure 🟡 (structure via daemon, skim not a mode) · 3 navigate 🟢 (spoken: next/prev function · class · method · line, jump/go-to-line N, top/end of file — each move reads the landed line) · 4 read code 🟢 · 5 show errors 🟢 (voice path + py_compile/pyflakes) · 6 edit-in-place 🔴 (no voice editing) · 7 debug 🟡 (DAP adapter live; step-through voice not complete) · 8 inspect variables 🟡 (watch only) · 9 git 🟢 · 10 run tests 🟢. **~6/10 fully met.**
+**Audio IDE (PLAN_AUDIO_IDE §12, 10 criteria):** 1 open project 🟢 · 2 skim structure 🟡 (structure via daemon, skim not a mode) · 3 navigate 🟢 (spoken: next/prev function · class · method · line, jump/go-to-line N, top/end of file — each move reads the landed line) · 4 read code 🟢 · 5 show errors 🟢 (voice path + py_compile/pyflakes) · 6 edit-in-place 🟢 (spoken "insert line/after line N …", "replace/change line N with …", "delete lines A to B", "delete current line" → edits the open file, re-anchors the daemon cursor, reads the changed line back; routed any-mode via `ide_action edit:*`) · 7 debug 🟡 (DAP adapter live; step-through voice not complete) · 8 inspect variables 🟡 (watch only) · 9 git 🟢 · 10 run tests 🟢. **~7/10 fully met.**
 
 ---
 

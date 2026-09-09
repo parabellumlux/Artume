@@ -552,6 +552,83 @@ def handle(low_speech, target_lower, target, ctx):
             play_earcon("found_match")
             return True
 
+    # --- Voice editing (edit-in-place) ---
+    import re
+    if ide.active_file and os.path.exists(ide.active_file):
+        file_path = ide.active_file
+        _edit_speak = None
+        _edit_matched = False
+        try:
+            from artome_ide import edit_delete_lines, edit_insert_line, edit_replace_line
+            if any(kw in low_speech for kw in ["insert line", "insert after",
+                                               "insert before", "insert at line",
+                                               "add line", "add new line"]):
+                _edit_matched = True
+                at_line = None
+                after = True
+                content = ""
+                m = re.search(r'(?:after line|before line|at line)\s*(\d+)\s*(.*)$',
+                              low_speech, re.I)
+                if m:
+                    at_line = int(m.group(1))
+                    after = "before line" not in low_speech
+                    content = m.group(2).strip()
+                else:
+                    content = re.sub(r'^(insert|add)\s*(?:a|new|a new)?\s*line\s*',
+                                     '', low_speech, flags=re.I).strip()
+                if content:
+                    play_earcon("info")
+                    result = edit_insert_line(file_path, content,
+                                              at_line=at_line, after=after)
+                    _edit_speak = result
+            elif any(kw in low_speech for kw in ["replace line", "replace current line",
+                                                 "change line", "rewrite line",
+                                                 "set line", "change current line"]):
+                _edit_matched = True
+                line = None
+                content = None
+                nums = [int(n) for n in re.findall(r'\d+', low_speech)]
+                m = re.search(r'(?:with|to)\s+(.+)$', low_speech, re.I)
+                if m and (" with " in low_speech or " to " in low_speech):
+                    content = m.group(1).strip()
+                if "current" in low_speech:
+                    line = _cursor_position()[0] + 1
+                elif nums:
+                    line = nums[0]
+                if line and content:
+                    play_earcon("info")
+                    result = edit_replace_line(file_path, line, content)
+                    _edit_speak = result
+            elif any(kw in low_speech for kw in ["delete line", "remove line",
+                                                 "delete lines", "remove lines",
+                                                 "cut line"]):
+                _edit_matched = True
+                nums = [int(n) for n in re.findall(r'\d+', low_speech)]
+                if "current" in low_speech:
+                    start = end = _cursor_position()[0] + 1
+                elif len(nums) >= 2:
+                    start, end = nums[0], nums[1]
+                elif nums:
+                    start = end = nums[0]
+                else:
+                    start = end = _cursor_position()[0] + 1
+                play_earcon("info")
+                result = edit_delete_lines(file_path, start, end)
+                _edit_speak = result
+            if _edit_speak:
+                tts.speak(_edit_speak["speech"])
+                if _edit_speak["changed"] and _edit_speak["start_line"]:
+                    tts.speak(ide.read_lines(
+                        start_line=_edit_speak["start_line"], count=1))
+            elif _edit_matched:
+                tts.speak("What should I change? Say the edit, for example "
+                          "'insert line return 0' or 'replace line 5 with return 0'.")
+        except Exception as e:
+            tts.speak(f"IDE edit error: {str(e)[:40]}")
+        if _edit_matched:
+            play_earcon("success")
+            return True
+
     # --- Spoken navigation (cursor movement) ---
     if any(kw in low_speech for kw in
            ["next function", "next class", "next method", "next symbol",

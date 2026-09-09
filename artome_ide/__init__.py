@@ -256,6 +256,77 @@ def go_to_edge(direction: int) -> dict:
     return {"speech": f"Line {target} of {total}", "line": target, "total": total}
 
 
+def _load_lines(file_path: str) -> list:
+    with open(file_path, "r", encoding="utf-8") as f:
+        return f.read().splitlines()
+
+
+def _write_lines(file_path: str, lines: list) -> int:
+    with open(file_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+        if lines:
+            f.write("\n")
+    return len(lines)
+
+
+def edit_insert_line(file_path: str, text: str, at_line: int | None = None,
+                     after: bool = True) -> dict:
+    """Insert a new line of text around the cursor (1-indexed).
+
+    Returns {"speech", "start_line", "end_line", "total", "changed"}.
+    """
+    lines = _load_lines(file_path)
+    total = len(lines)
+    if at_line is None:
+        at_line = int(get_client().get_cursor().get("line", total))
+    at_line = max(1, min(total + 1, at_line))
+    if after:
+        lines.insert(at_line, text)  # insert after 1-indexed at_line
+        inserted_line = at_line
+    else:
+        lines.insert(at_line - 1, text)
+        inserted_line = max(1, at_line - 1)
+    new_total = _write_lines(file_path, lines)
+    get_client().set_cursor(inserted_line)
+    return {
+        "speech": f"Inserted line {inserted_line}: {text}.",
+        "start_line": inserted_line,
+        "end_line": inserted_line,
+        "total": new_total,
+        "changed": True,
+    }
+
+
+def edit_replace_line(file_path: str, line: int, text: str) -> dict:
+    """Replace a single line (1-indexed)."""
+    lines = _load_lines(file_path)
+    if line < 1 or line > len(lines):
+        return {"speech": f"Line {line} does not exist.", "start_line": 0,
+                "end_line": 0, "total": len(lines), "changed": False}
+    lines[line - 1] = text
+    new_total = _write_lines(file_path, lines)
+    get_client().set_cursor(line)
+    return {"speech": f"Replaced line {line}: {text}.", "start_line": line,
+            "end_line": line, "total": new_total, "changed": True}
+
+
+def edit_delete_lines(file_path: str, start: int, end: int) -> dict:
+    """Delete a range of lines (1-indexed inclusive)."""
+    lines = _load_lines(file_path)
+    before = len(lines)
+    if end < start:
+        start, end = end, start
+    start = max(1, min(before, start))
+    end = max(1, min(before, end))
+    del lines[start - 1:end]
+    new_total = _write_lines(file_path, lines)
+    target = min(start, new_total)
+    get_client().set_cursor(target)
+    return {"speech": f"Deleted lines {start} to {end}. Total now {new_total}.",
+            "start_line": target, "end_line": target, "total": new_total,
+            "changed": new_total < before}
+
+
 def where_am_i() -> str:
     """Get current location description."""
     try:
