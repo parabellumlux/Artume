@@ -84,13 +84,24 @@ class TestScreenSummary:
     def test_runs_reader(self):
         ctx = _ctx()
         ctx['screen_reader'].generate_screen_summary_payload.return_value = "two windows open"
-        with patch("earcons.play_earcon"):
+        with patch("earcons.play_earcon"), \
+             patch("requests.post", return_value=MagicMock(
+                 **{"json.return_value": {"response": "Two windows open, dock visible."}})):
             execute_action(
                 {"action": "screen_summary", "speech": "Summarizing screen", "target": "COMMAND:SCREEN_SUMMARY"},
                 "screen summary", "DESKTOP", ctx)
         ctx['screen_reader'].generate_screen_summary_payload.assert_called_once_with()
-        spoken = [str(c) for c in ctx['tts'].speak.call_args_list]
-        assert any("two windows open" in s for s in spoken)
+        ctx['tts'].speak.assert_any_call("Screen summary: Two windows open, dock visible.")
+
+    def test_falls_back_to_raw_payload(self):
+        ctx = _ctx()
+        ctx['screen_reader'].generate_screen_summary_payload.return_value = "two windows open"
+        with patch("earcons.play_earcon"), \
+             patch("requests.post", side_effect=RuntimeError("ollama down")):
+            execute_action(
+                {"action": "screen_summary", "speech": "Summarizing screen", "target": "COMMAND:SCREEN_SUMMARY"},
+                "screen summary", "DESKTOP", ctx)
+        ctx['tts'].speak.assert_any_call("Screen summary: two windows open")
 
     def test_falls_back_when_reader_fails(self):
         ctx = _ctx()

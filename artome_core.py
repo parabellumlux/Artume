@@ -145,9 +145,38 @@ def execute_action(intent, user_speech, current_mode, ctx):
     if action == "screen_summary" or "screen" in low_speech or target == "COMMAND:SCREEN_SUMMARY":
         play_earcon("success")
         try:
-            summary = ctx['screen_reader'].generate_screen_summary_payload()
-            tts.speak(f"Screen summary: {str(summary)[:300]}")
+            payload = str(ctx['screen_reader'].generate_screen_summary_payload())
         except Exception:
+            payload = ""
+        if payload:
+            from intent_router import OLLAMA_URL, REASONING_MODEL
+            import requests
+            ai_summary = ""
+            try:
+                res = requests.post(
+                    OLLAMA_URL,
+                    json={
+                        "model": REASONING_MODEL,
+                        "prompt": (
+                            "You are Artome OS voice assistant. Summarize what is on the "
+                            "screen for a blind user in 2 concise sentences based on this "
+                            "UI accessibility tree.\n\n"
+                            f"Accessibility UI Elements:\n{payload[:4000]}\n\n"
+                            "Spoken summary for blind user:"
+                        ),
+                        "stream": False,
+                        "options": {"temperature": 0.3, "num_predict": 90},
+                    },
+                    timeout=12,
+                )
+                ai_summary = res.json().get("response", "").strip()
+            except Exception:
+                ai_summary = ""
+            if ai_summary:
+                tts.speak(f"Screen summary: {ai_summary[:300]}")
+            else:
+                tts.speak(f"Screen summary: {payload[:300]}")
+        else:
             tts.speak(speech or "Screen summary is not available.")
         return current_mode
 

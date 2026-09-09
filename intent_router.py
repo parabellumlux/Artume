@@ -548,7 +548,6 @@ def ask_artome_ai(user_speech, mode="DESKTOP"):
 
     Never returns empty speech.
     """
-    window_title = get_active_window()
     low_speech = user_speech.lower().strip()
 
     if not low_speech:
@@ -558,32 +557,10 @@ def ask_artome_ai(user_speech, mode="DESKTOP"):
     # TIER 0: Fast path — screen summary (bypasses model entirely)
     # ====================================================================
     if "screen" in low_speech or "what is on screen" in low_speech or "read screen" in low_speech or mode == "SCREEN_SUMMARY":
-        accessibility_tree = _get_screen_reader().generate_screen_summary_payload()
-        summary_prompt = f"""You are Artome OS voice assistant. Summarize what is on the screen for a blind user in 2 concise sentences based on this UI accessibility tree.
-
-Active Window: "{window_title}"
-Accessibility UI Elements:
-{accessibility_tree}
-
-Spoken summary for blind user:"""
-
-        try:
-            res = requests.post(
-                OLLAMA_URL,
-                json={
-                    "model": REASONING_MODEL,
-                    "prompt": summary_prompt,
-                    "stream": False,
-                    "options": {"temperature": 0.3, "num_predict": 90},
-                },
-                timeout=12,
-            )
-            ai_summary = res.json()["response"].strip()
-            if ai_summary:
-                return {"action": "screen_summary", "speech": f"Screen summary: {ai_summary}", "target": "COMMAND:SCREEN_SUMMARY"}
-        except Exception:
-            pass
-        return {"action": "screen_summary", "speech": f"Active window is {window_title}.", "target": "COMMAND:SCREEN_SUMMARY"}
+        # The actual summarisation happens once, in execute_action's
+        # screen_summary branch (payload -> Ollama -> spoken fallback), so the
+        # router stays fast and there is a single generation path.
+        return {"action": "screen_summary", "speech": "Summarizing screen", "target": "COMMAND:SCREEN_SUMMARY"}
 
     # ====================================================================
     # STAGE 1: Classify

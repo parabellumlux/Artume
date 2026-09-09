@@ -86,6 +86,27 @@ class IdeClient:
         """Get the current cursor position."""
         return self._call("get_cursor")
 
+    def lsp_init(self, command: list) -> dict:
+        """Start a persistent language server (e.g. ["pylsp"])."""
+        return self._call("lsp_init", {"command": list(command)})
+
+    def lsp_go_to_definition(self, file: str, line: int, column: int) -> dict:
+        return self._call("lsp_go_to_definition",
+                          {"file": file, "line": line, "column": column})
+
+    def lsp_hover(self, file: str, line: int, column: int) -> dict:
+        return self._call("lsp_hover",
+                          {"file": file, "line": line, "column": column})
+
+    def lsp_references(self, file: str, line: int, column: int) -> dict:
+        return self._call("lsp_references",
+                          {"file": file, "line": line, "column": column})
+
+    def lsp_rename(self, file: str, line: int, column: int, new_name: str) -> dict:
+        return self._call("lsp_rename",
+                          {"file": file, "line": line, "column": column,
+                           "new_name": new_name})
+
     def shutdown(self) -> bool:
         """Send a JSON-RPC shutdown request and close the connection."""
         try:
@@ -106,6 +127,7 @@ class IdeClient:
 # ---------------------------------------------------------------------------
 
 _client: Optional[IdeClient] = None
+_lsp_initialized = False
 
 
 def get_client() -> IdeClient:
@@ -183,6 +205,67 @@ def where_am_i() -> str:
         return f"Line {line} of {total}"
     except RuntimeError as e:
         return f"Error: {e}"
+
+
+# ---------------------------------------------------------------------------
+# LSP over daemon IPC (persistent language server)
+# ---------------------------------------------------------------------------
+
+def _lsp_ensure() -> None:
+    """Start the daemon's persistent pylsp once."""
+    global _lsp_initialized
+    if _lsp_initialized:
+        return
+    get_client().lsp_init(["pylsp"])
+    _lsp_initialized = True
+
+
+def lsp_go_to_definition(file_path: str, line: int, column: int) -> str:
+    _lsp_ensure()
+    loc = get_client().lsp_go_to_definition(file_path, line, column).get("location")
+    if loc:
+        name = loc.get("file", "").replace("file://", "")
+        return f"Definition at {name} line {loc.get('line', 0) + 1}"
+    return "No definition found."
+
+
+def lsp_hover(file_path: str, line: int, column: int) -> str:
+    _lsp_ensure()
+    info = get_client().lsp_hover(file_path, line, column)
+    type_info = info.get("type_info") or ""
+    docstring = info.get("docstring") or ""
+    if type_info and docstring:
+        return f"{type_info}. {docstring}"
+    return type_info or docstring or "No hover information available."
+
+
+def lsp_references(file_path: str, line: int, column: int) -> str:
+    _lsp_ensure()
+    refs = get_client().lsp_references(file_path, line, column).get("references", [])
+    count = len(refs)
+    if count == 0:
+        return "No references found."
+    locations = []
+    for ref in refs[:5]:
+        uri = ref.get("file", "").replace("file://", "")
+        locations.append(f"{os.path.basename(uri)} line {ref.get('line', 0) + 1}")
+    summary = f"Found {count} reference{'s' if count != 1 else ''}."
+    if locations:
+        summary += " Including: " + ", ".join(locations)
+    return summary
+
+
+def lsp_rename(file_path: str, line: int, column: int, new_name: str) -> str:
+    _lsp_ensure()
+    edit = get_client().lsp_rename(file_path, line, column, new_name).get(
+        "workspace_edit") or {}
+    changes = edit.get("changes", {}) or {}
+    total_edits = sum(len(v) for v in changes.values())
+    if total_edits:
+        return (f"Renamed to {new_name}. {total_edits} edit"
+                f"{'s' if total_edits != 1 else ''} across "
+                f"{len(changes)} file{'s' if len(changes) != 1 else ''}.")
+    return f"Rename to {new_name} completed."
 
 
 # ---------------------------------------------------------------------------

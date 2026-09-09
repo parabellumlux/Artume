@@ -14,6 +14,40 @@ def _cursor_position():
         return (0, 0)
 
 
+def _lsp_command(kind, file_path, line, column, new_name=None):
+    """Run an LSP command via the daemon's persistent client, falling back
+    to a per-command pylsp process. Returns the spoken result string."""
+    for source in ("daemon", "python"):
+        try:
+            if source == "daemon":
+                from artome_ide import (lsp_go_to_definition, lsp_hover,
+                                        lsp_references, lsp_rename)
+                if kind == "definition":
+                    return lsp_go_to_definition(file_path, line, column)
+                if kind == "references":
+                    return lsp_references(file_path, line, column)
+                if kind == "hover":
+                    return lsp_hover(file_path, line, column)
+                return lsp_rename(file_path, line, column, new_name)
+            from lsp_client import LSPClient
+            lsp = LSPClient(["pylsp"], root_uri=os.path.dirname(file_path))
+            if not lsp.start():
+                return "LSP server not available. Install pylsp."
+            try:
+                if kind == "definition":
+                    return lsp.go_to_definition(file_path, line, column)
+                if kind == "references":
+                    return lsp.find_references(file_path, line, column)
+                if kind == "hover":
+                    return lsp.hover(file_path, line, column)
+                return lsp.rename(file_path, line, column, new_name)
+            finally:
+                lsp.stop()
+        except Exception:
+            if source == "python":
+                return "LSP server not available."
+
+
 def _check_file_errors(filepath):
     """Compile and statically lint a Python file, returning a spoken summary."""
     import io
@@ -329,15 +363,8 @@ def handle(low_speech, target_lower, target, ctx):
                                         "where is this defined", "where defined"]):
         play_earcon("info")
         if ide.active_file and os.path.exists(ide.active_file):
-            from lsp_client import LSPClient
-            lsp = LSPClient(["pylsp"], root_uri=os.path.dirname(ide.active_file))
-            if lsp.start():
-                lsp_line, lsp_col = _cursor_position()
-                result = lsp.go_to_definition(ide.active_file, lsp_line, lsp_col)
-                tts.speak(result)
-                lsp.stop()
-            else:
-                tts.speak("LSP server not available. Install pylsp.")
+            lsp_line, lsp_col = _cursor_position()
+            tts.speak(_lsp_command("definition", ide.active_file, lsp_line, lsp_col))
         else:
             tts.speak("No active file loaded.")
         play_earcon("success")
@@ -347,15 +374,8 @@ def handle(low_speech, target_lower, target, ctx):
                                         "where is this used", "all references"]):
         play_earcon("info")
         if ide.active_file and os.path.exists(ide.active_file):
-            from lsp_client import LSPClient
-            lsp = LSPClient(["pylsp"], root_uri=os.path.dirname(ide.active_file))
-            if lsp.start():
-                lsp_line, lsp_col = _cursor_position()
-                result = lsp.find_references(ide.active_file, lsp_line, lsp_col)
-                tts.speak(result)
-                lsp.stop()
-            else:
-                tts.speak("LSP server not available.")
+            lsp_line, lsp_col = _cursor_position()
+            tts.speak(_lsp_command("references", ide.active_file, lsp_line, lsp_col))
         else:
             tts.speak("No active file loaded.")
         play_earcon("success")
@@ -365,15 +385,8 @@ def handle(low_speech, target_lower, target, ctx):
                                         "what type", "what kind"]):
         play_earcon("info")
         if ide.active_file and os.path.exists(ide.active_file):
-            from lsp_client import LSPClient
-            lsp = LSPClient(["pylsp"], root_uri=os.path.dirname(ide.active_file))
-            if lsp.start():
-                lsp_line, lsp_col = _cursor_position()
-                result = lsp.hover(ide.active_file, lsp_line, lsp_col)
-                tts.speak(result)
-                lsp.stop()
-            else:
-                tts.speak("LSP server not available.")
+            lsp_line, lsp_col = _cursor_position()
+            tts.speak(_lsp_command("hover", ide.active_file, lsp_line, lsp_col))
         else:
             tts.speak("No active file loaded.")
         play_earcon("success")
@@ -388,15 +401,8 @@ def handle(low_speech, target_lower, target, ctx):
         if new_name:
             play_earcon("info")
             if ide.active_file and os.path.exists(ide.active_file):
-                from lsp_client import LSPClient
-                lsp = LSPClient(["pylsp"], root_uri=os.path.dirname(ide.active_file))
-                if lsp.start():
-                    lsp_line, lsp_col = _cursor_position()
-                    result = lsp.rename(ide.active_file, lsp_line, lsp_col, new_name)
-                    tts.speak(result)
-                    lsp.stop()
-                else:
-                    tts.speak("LSP server not available.")
+                lsp_line, lsp_col = _cursor_position()
+                tts.speak(_lsp_command("rename", ide.active_file, lsp_line, lsp_col, new_name))
             else:
                 tts.speak("No active file loaded.")
         else:

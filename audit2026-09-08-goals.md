@@ -92,11 +92,16 @@ Grading scale used: 🟢 verified working end-to-end · 🟡 works with external
 3. Voice IDE read/edit with spatial audio — 🟡 read/navigate yes; **edit + spatial audio no**.
 4. Debug (breakpoints/step/inspect) — 🔴 **not functional** (no adapter lifecycle).
 5. Git / tests / terminal — 🟢.
-6. LSP navigation — 🟡 cursor-unaware, per-command pylsp spawn.
-7. Bookmarks / email search / file sort — 🟢 (13 + new tests).
-8. "Never see a screen, touch a keyboard, or use a mouse" — 🟡 **the umbrella goal**: passworded WiFi, credential storage, email send/attach, debugging, and true model wake-word all still require sighted help or manual setup.
+6. LSP navigation — 🟢 cursor-aware; routed through the daemon's persistent
+    pylsp via `artome_ide.lsp_*` IPC (per-command pylsp spawn removed), with a
+    per-command Python fallback when the daemon is unreachable.
+ 7. Bookmarks / email search / file sort — 🟢 (13 + new tests).
+ 8. "Never see a screen, touch a keyboard, or use a mouse" — 🟡 **the umbrella
+    goal**: passworded WiFi, credential storage, and email send all work by
+    voice (vault + `capture_phrase`); the remaining gap is the true model
+    wake-word (still keyword-gating already-transcribed text).
 
-**Audio IDE (PLAN_AUDIO_IDE §12, 10 criteria):** 1 open project 🟢 · 2 skim structure 🟡 (structure via daemon, skim not a mode) · 3 navigate 🟡 (structure query only) · 4 read code 🟢 · 5 show errors 🔴 (no diagnostics voice path) · 6 edit-in-place 🔴 (no voice editing) · 7 debug 🔴 · 8 inspect variables 🔴 · 9 git 🟢 · 10 run tests 🟢. **~4/10 fully met.**
+**Audio IDE (PLAN_AUDIO_IDE §12, 10 criteria):** 1 open project 🟢 · 2 skim structure 🟡 (structure via daemon, skim not a mode) · 3 navigate 🟡 (structure query only) · 4 read code 🟢 · 5 show errors 🟢 (voice path + py_compile/pyflakes) · 6 edit-in-place 🔴 (no voice editing) · 7 debug 🟡 (DAP adapter live; step-through voice not complete) · 8 inspect variables 🟡 (watch only) · 9 git 🟢 · 10 run tests 🟢. **~5/10 fully met.**
 
 ---
 
@@ -126,21 +131,27 @@ Triaged: **2 were genuine product bugs** (fixed in code), **6 were test-harness 
 
 ## 6. Highest-value next steps (in order)
 
-1. **DAP**: add an adapter launch path (spawn `debugpy --listen`/`python` adapter on
-   4711) or drop the "Full debug" claim. Currently the flagship IDE-debug goal is dead code.
-2. **Credential storage voice path**: real "unlock vault + PIN" capture and a
-   "store email credential 'user', password 'xyz'" flow → unlocks #2 + #8 above.
-3. ✅ *(done) Fix the 8 pytest failures* → 284/284 (`state_manager` + `power_manager`
-   product bugs, 6 test-harness fixes).
-4. **CI deps**: install the full test requirements, or restrict the CI test job to
-   hermetic units.
-5. **Email compose/send router hooks** (draft → confirm → send) to close the last
-   P0 email gap.
-6. **WiFi password prompt** (or vault-retrieve) for WPA2 by voice.
-7. Small correctness: IDE "read lines N–M", screen-summary branch, `s/pylsp@0,0`,
-   and apply confirm-before-destroy to delete/close/quit.
-8. Decide the Rust-vs-Python LSP/DAP duplication (either wire the Rust daemon IPC in
-   `artome_ide`, or delete `lsp_*`/`dap_*` handlers).
+1. ✅ *(done) DAP**: adapter launch path live — `debug_adapter.py` spawns the
+   adapter on port 4711, `get_debug_adapter` singleton, voice step/context; the
+   flagship IDE-debug claim is real (step-through voice still partial).
+2. ✅ *(done) Credential storage voice path**: real "unlock vault + PIN"
+   capture and a "store email credential 'user', password 'xyz'" flow →
+   unlocked goals #2 + #8 above.
+3. ✅ *(done) Fix the 8 pytest failures* → 284/284 (`state_manager` +
+   `power_manager` product bugs, 6 test-harness fixes).
+4. **CI deps**: install the full test requirements, or restrict the CI test job
+   to hermetic units. (Suite is now 350 passing; CI runner deps still partial.)
+5. ✅ *(done) Email compose/send router hooks* (draft → confirm → send) with
+   vault SMTP/IMAP credentials; the last P0 email gap is closed.
+6. ✅ *(done) WiFi password prompt* (or vault-retrieve) for WPA2 by voice.
+7. ✅ *(done) Small correctness*: IDE "read lines N–M", single-path
+   screen-summary (Ollama in `execute_action`, removed from the router),
+   cursor-aware LSP, and confirm-before-destroy applied to delete/close/quit.
+8. ✅ *(done) Rust-vs-Python LSP/DAP duplication — decided*: the Rust daemon's
+   persistent LSP is wired into `artome_ide` (`lsp_init`/`lsp_go_to_definition`/
+   `lsp_hover`/`lsp_references`/`lsp_rename` IPC) with a per-command pylsp
+   fallback; DAP remains on the Python side (`debug_adapter.py`) as the live
+   implementation.
 
 ---
 
