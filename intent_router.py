@@ -339,6 +339,20 @@ def _dispatch(label: str, text: str, mode: str) -> dict:
                                "what type", "what kind"]):
         return {"action": "lsp_action", "speech": "Checking type info", "target": "hover"}
 
+    # --- Spoken navigation (any mode) ---
+    if any(w in low for w in ["next function", "next class", "next method",
+                              "next symbol", "previous function", "previous class",
+                              "previous method", "previous symbol", "prev function",
+                              "prev class", "prev symbol", "next line",
+                              "previous line", "go to line", "jump to line",
+                              "jump down", "jump up", "move up", "move down",
+                              "go up one line", "go down one line",
+                              "start of file", "top of file", "beginning of file",
+                              "end of file", "bottom of file", "where am i",
+                              "cursor position"]):
+        return {"action": "ide_action", "speech": "IDE navigation",
+                "target": f"navigate:{text}"}
+
     # --- DAP commands (debug, step, continue, breakpoint) ---
     if any(w in low for w in ["start debugging", "debug this", "debug file", "run debugger",
                                "start debug session"]):

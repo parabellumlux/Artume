@@ -187,6 +187,75 @@ def go_to_line(line: int) -> str:
         return f"Error: {e}"
 
 
+def _structure_symbols(kinds=("function", "class")):
+    """Top-level code symbols sorted by start line."""
+    structure = get_client().get_structure()
+    return sorted(
+        [s for s in structure.get("symbols", [])
+         if s.get("kind") in kinds],
+        key=lambda s: s.get("start_line", 0))
+
+
+def next_symbol(direction: int = 1, kinds=("function", "class")) -> dict:
+    """Move the cursor to the adjacent function/class symbol.
+
+    Returns {"speech", "line", "total"} where line is the 1-indexed target
+    line (0 if no move was made).
+    """
+    structure = get_client().get_structure()
+    total = int(structure.get("total_lines", 0))
+    symbols = _structure_symbols(kinds)
+    if not symbols:
+        return {"speech": "No symbols found.", "line": 0, "total": total}
+    cursor = get_client().get_cursor()
+    current = int(cursor.get("line", 0))
+    target = None
+    if direction > 0:
+        target = next((s for s in symbols if s["start_line"] > current), None)
+    else:
+        for s in reversed(symbols):
+            if s["start_line"] < current:
+                target = s
+                break
+    if target is None:
+        edge = "end" if direction > 0 else "start"
+        return {"speech": f"Already at the {edge} of the file.",
+                "line": 0, "total": total}
+    get_client().set_cursor(target["start_line"])
+    return {
+        "speech": f"{target['kind'].capitalize()} {target['name']}, "
+                  f"line {target['start_line']}",
+        "line": target["start_line"],
+        "total": total,
+    }
+
+
+def move_lines(amount: int) -> dict:
+    """Move the cursor by a signed line delta (clamped to the file).
+
+    Returns {"speech", "line", "total"}.
+    """
+    structure = get_client().get_structure()
+    total = int(structure.get("total_lines", 0))
+    cursor = get_client().get_cursor()
+    current = int(cursor.get("line", 0))
+    target = max(1, min(total, current + amount)) if total else current
+    if target == current:
+        edge = "top of the file" if amount < 0 else "end of the file"
+        return {"speech": f"Already at the {edge}.", "line": 0, "total": total}
+    get_client().set_cursor(target)
+    return {"speech": f"Line {target}", "line": target, "total": total}
+
+
+def go_to_edge(direction: int) -> dict:
+    """Move to the start (negative) or end (positive) of the file."""
+    structure = get_client().get_structure()
+    total = int(structure.get("total_lines", 0))
+    target = 1 if direction < 0 else max(1, total)
+    get_client().set_cursor(target)
+    return {"speech": f"Line {target} of {total}", "line": target, "total": total}
+
+
 def where_am_i() -> str:
     """Get current location description."""
     try:

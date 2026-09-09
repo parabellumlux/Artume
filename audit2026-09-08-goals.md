@@ -101,7 +101,7 @@ Grading scale used: 🟢 verified working end-to-end · 🟡 works with external
     voice (vault + `capture_phrase`); the remaining gap is the true model
     wake-word (still keyword-gating already-transcribed text).
 
-**Audio IDE (PLAN_AUDIO_IDE §12, 10 criteria):** 1 open project 🟢 · 2 skim structure 🟡 (structure via daemon, skim not a mode) · 3 navigate 🟡 (structure query only) · 4 read code 🟢 · 5 show errors 🟢 (voice path + py_compile/pyflakes) · 6 edit-in-place 🔴 (no voice editing) · 7 debug 🟡 (DAP adapter live; step-through voice not complete) · 8 inspect variables 🟡 (watch only) · 9 git 🟢 · 10 run tests 🟢. **~5/10 fully met.**
+**Audio IDE (PLAN_AUDIO_IDE §12, 10 criteria):** 1 open project 🟢 · 2 skim structure 🟡 (structure via daemon, skim not a mode) · 3 navigate 🟢 (spoken: next/prev function · class · method · line, jump/go-to-line N, top/end of file — each move reads the landed line) · 4 read code 🟢 · 5 show errors 🟢 (voice path + py_compile/pyflakes) · 6 edit-in-place 🔴 (no voice editing) · 7 debug 🟡 (DAP adapter live; step-through voice not complete) · 8 inspect variables 🟡 (watch only) · 9 git 🟢 · 10 run tests 🟢. **~6/10 fully met.**
 
 ---
 

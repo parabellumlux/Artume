@@ -455,10 +455,13 @@ def handle(low_speech, target_lower, target, ctx):
         if client:
             result = client.step_over()
             tts.speak(result)
-        else:
+            play_earcon("success")
+            return True
+        if "step" in low_speech:
             tts.speak("No active debug session.")
-        play_earcon("success")
-        return True
+            play_earcon("success")
+            return True
+        # "next line" without a live session → falls through to spoken navigation
 
     if any(kw in low_speech for kw in ["step into", "go into", "enter function"]):
         play_earcon("info")
@@ -548,6 +551,83 @@ def handle(low_speech, target_lower, target, ctx):
                 tts.speak(f"IDE daemon error: {str(e)[:40]}")
             play_earcon("found_match")
             return True
+
+    # --- Spoken navigation (cursor movement) ---
+    if any(kw in low_speech for kw in
+           ["next function", "next class", "next method", "next symbol",
+            "previous function", "previous class", "previous method",
+            "previous symbol", "prev function", "prev class", "prev method",
+            "prev symbol"]):
+        play_earcon("found_match")
+        direction = -1 if ("previous" in low_speech or "prev" in low_speech) else 1
+        if "method" in low_speech:
+            kinds = ("function", "method")
+        elif "class" in low_speech:
+            kinds = ("class", "function")
+        else:
+            kinds = ("function", "class")
+        try:
+            from artome_ide import next_symbol
+            result = next_symbol(direction, kinds)
+            tts.speak(result["speech"])
+            if result["line"]:
+                tts.speak(ide.read_lines(start_line=result["line"], count=1))
+        except Exception as e:
+            tts.speak(f"IDE daemon error: {str(e)[:40]}")
+        play_earcon("scope_enter_function")
+        return True
+
+    if "go to line" in low_speech or "jump to line" in low_speech:
+        import re
+        nums = [int(n) for n in re.findall(r'\d+', low_speech)]
+        if nums:
+            play_earcon("found_match")
+            try:
+                from artome_ide import go_to_line
+                target_line = nums[0]
+                tts.speak(go_to_line(target_line))
+                tts.speak(ide.read_lines(start_line=target_line, count=1))
+            except Exception as e:
+                tts.speak(f"IDE daemon error: {str(e)[:40]}")
+            play_earcon("scope_enter_function")
+            return True
+
+    if any(kw in low_speech for kw in ["next line", "previous line", "go up",
+                                       "go down", "move up", "move down",
+                                       "jump down", "jump up", "line down",
+                                       "line up"]):
+        play_earcon("found_match")
+        import re
+        nums = [int(n) for n in re.findall(r'\d+', low_speech)]
+        amount = nums[0] if nums else 10
+        down = any(k in low_speech for k in ["next line", "down", "jump down"])
+        delta = amount if down else -amount
+        try:
+            from artome_ide import move_lines
+            moved = move_lines(delta)
+            tts.speak(moved["speech"])
+            if moved["line"]:
+                tts.speak(ide.read_lines(start_line=moved["line"], count=1))
+        except Exception as e:
+            tts.speak(f"IDE daemon error: {str(e)[:40]}")
+        play_earcon("scope_enter_function")
+        return True
+
+    if any(kw in low_speech for kw in ["start of file", "top of file", "beginning of file",
+                                       "end of file", "bottom of file", "end of the file",
+                                       "top of the file"]):
+        play_earcon("found_match")
+        direction = -1 if any(k in low_speech for k in ["start of", "top of", "beginning of"]) else 1
+        try:
+            from artome_ide import go_to_edge
+            moved = go_to_edge(direction)
+            tts.speak(moved["speech"])
+            if moved["line"]:
+                tts.speak(ide.read_lines(start_line=moved["line"], count=1))
+        except Exception as e:
+            tts.speak(f"IDE daemon error: {str(e)[:40]}")
+        play_earcon("scope_enter_function")
+        return True
 
     if "where am i" in low_speech or "cursor position" in low_speech:
         play_earcon("info")
