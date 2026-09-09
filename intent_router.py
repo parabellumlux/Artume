@@ -37,7 +37,6 @@ import re
 import requests
 import subprocess
 import time
-from screen_reader import AtspiScreenReader
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
 ROUTER_MODEL = "llama3.1:8b"          # Tier 1 — GTX 1080 (reliable classifier)
@@ -66,6 +65,8 @@ _screen_reader = None
 def _get_screen_reader():
     global _screen_reader
     if _screen_reader is None:
+        from screen_reader import AtspiScreenReader
+
         _screen_reader = AtspiScreenReader()
     return _screen_reader
 

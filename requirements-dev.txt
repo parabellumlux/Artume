@@ -1,0 +1,13 @@
+pytest>=8.3
+pyflakes>=3.2
+numpy>=2.0
+requests>=2.32
+sounddevice>=0.5.1
+beautifulsoup4>=4.12
+html2text>=2024.2.26
+cryptography>=43.0
+python-docx>=1.1
+fpdf2>=2.8
+EbookLib>=0.19
+pypdf>=5.0
+Markdown>=3.7

@@ -123,9 +123,12 @@ Triaged: **2 were genuine product bugs** (fixed in code), **6 were test-harness 
 ## 5. CI (added yesterday, pushed)
 
 - **Rust job**: 🟢 would pass (fmt, clippy -D, build, 165 tests all validated locally).
-- **Python job**: 🟡 *test failures fixed (284/284 locally), but deps incomplete* — the
-  runner installs only `pytest faster-whisper numpy sounddevice requests cryptography`, while
-  the suite imports `gi`, `ebooklib`, `pypdf`, `bs4`, `html2text`, `docx`, `fpdf`, `np`, etc.
+- **Python job**: 🟢 *fixed* — `requirements-dev.txt` pins the full import-time test deps
+  (pytest, pyflakes, numpy, requests, sounddevice, bs4, html2text, cryptography,
+  python-docx, fpdf2, EbookLib, pypdf, Markdown) and the CI install step uses it.
+  `gi`/AT-SPI is no longer an import-time dependency: `intent_router` now lazily
+  imports `screen_reader` (same pattern as `artome_core._init_all`). Verified: full
+  suite (397 tests) passes in a clean venv built from `requirements-dev.txt` alone.
 
 ---
 
@@ -139,8 +142,9 @@ Triaged: **2 were genuine product bugs** (fixed in code), **6 were test-harness 
    unlocked goals #2 + #8 above.
 3. ✅ *(done) Fix the 8 pytest failures* → 284/284 (`state_manager` +
    `power_manager` product bugs, 6 test-harness fixes).
-4. **CI deps**: install the full test requirements, or restrict the CI test job
-   to hermetic units. (Suite is now 350 passing; CI runner deps still partial.)
+4. ✅ *(done) CI deps**: `requirements-dev.txt` + CI install step updated; verified
+   the full suite (now 397 passing) in a clean venv built from that file alone;
+   `gi` made a lazy import in `intent_router` so CI needs no system packages.
 5. ✅ *(done) Email compose/send router hooks* (draft → confirm → send) with
    vault SMTP/IMAP credentials; the last P0 email gap is closed.
 6. ✅ *(done) WiFi password prompt* (or vault-retrieve) for WPA2 by voice.
