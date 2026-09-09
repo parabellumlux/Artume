@@ -15,6 +15,8 @@ class AudioWebBrowser:
         self.page_title = "No page loaded"
         self.headings = []
         self.links = []
+        self._heading_index = -1
+        self._link_index = -1
         self.article_text = ""
         self.headers = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) ArtomeAudioBrowser/1.0"}
         self.h2t = html2text.HTML2Text()
@@ -58,6 +60,8 @@ class AudioWebBrowser:
 
         try:
             res = requests.get(url, headers=self.headers, timeout=12)
+            self._heading_index = -1
+            self._link_index = -1
             # Track history
             if self.current_url:
                 self._history = self._history[:self._history_index + 1]
@@ -125,6 +129,38 @@ class AudioWebBrowser:
         for i, l in enumerate(self.links[:limit], 1):
             speech += f"Link {i}: {l['text']}. "
         return speech
+
+    def _move_cursor(self, kind, step=1):
+        """Advance the link/heading cursor and speak the landed item."""
+        items = self.links if kind == "link" else self.headings
+        label = kind
+        if not items:
+            return f"No {label}s found on this page."
+        current = self._link_index if kind == "link" else self._heading_index
+        total = len(items)
+        if current == -1:
+            if step < 0:
+                return f"Already at the first {label}."
+            target = 0
+        else:
+            target = max(0, min(total - 1, current + step))
+            if target == current:
+                edge = "last" if step > 0 else "first"
+                return f"Already at the {edge} {label}."
+        if kind == "link":
+            self._link_index = target
+        else:
+            self._heading_index = target
+        text = items[target]["text"]
+        return f"{label.capitalize()} {target + 1} of {total}: {text}."
+
+    def next_heading(self, step=1):
+        """Move to the next/previous heading and speak it."""
+        return self._move_cursor("heading", step)
+
+    def next_link(self, step=1):
+        """Move to the next/previous link and speak it."""
+        return self._move_cursor("link", step)
 
     def click_link_by_index(self, index):
         """Click link by 1-based audio index."""

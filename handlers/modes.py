@@ -171,6 +171,15 @@ def handle(low_speech, target_lower, target, speech, action, current_mode, ctx):
             tts.speak(browser.search(query))
         elif target.startswith("http") or "." in target:
             tts.speak(browser.load_url(target))
+        elif target in ("navigate_headings", "navigate_links") or \
+             any(w in low_speech for w in ["next heading", "previous heading",
+                                            "prev heading", "next link",
+                                            "previous link", "prev link"]):
+            step = -1 if ("previous" in low_speech or "prev" in low_speech) else 1
+            if "heading" in low_speech or target == "navigate_headings":
+                tts.speak(browser.next_heading(step))
+            else:
+                tts.speak(browser.next_link(step))
         elif "heading" in target_lower or "headings" in speech.lower():
             tts.speak(browser.get_headings_audio())
         elif "link" in target_lower or "links" in speech.lower():

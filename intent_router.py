@@ -200,6 +200,12 @@ def _dispatch(label: str, text: str, mode: str) -> dict:
     if label == "entity_lookup" or any(w in low for w in ["copy that", "tracking number", "look up", "entity"]):
         return {"action": "speak", "speech": "Looking up that entity from our conversation.", "target": "entity_lookup"}
 
+    if any(w in low for w in ["next heading", "previous heading", "prev heading"]):
+        return {"action": "web_navigate", "speech": "Navigating headings", "target": "navigate_headings"}
+
+    if any(w in low for w in ["next link", "previous link", "prev link"]):
+        return {"action": "web_navigate", "speech": "Navigating links", "target": "navigate_links"}
+
     # --- web_fetch ---
     if label == "web_fetch" or any(w in low for w in ["read me", "read http", "fetch", "browse", "open http", ".com", ".org"]):
         # Browser navigation commands
