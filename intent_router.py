@@ -411,6 +411,16 @@ def _dispatch(label: str, text: str, mode: str) -> dict:
         idx = int(nums[0]) if nums else 1
         return {"action": "email_action", "speech": f"Checking attachments for email {idx}", "target": f"attachments:{idx}"}
 
+    if any(w in low for w in ["send email", "send the email", "send email now", "send the draft"]):
+        return {"action": "email_action", "speech": "Sending email", "target": "send_draft"}
+
+    if any(w in low for w in ["compose email", "compose an email", "new email", "write email",
+                              "draft email", "compose a message", "write a message"]):
+        return {"action": "email_action", "speech": "Preparing to compose", "target": "compose"}
+
+    if any(w in low for w in ["cancel draft", "discard email", "delete draft", "discard draft"]):
+        return {"action": "email_action", "speech": "Cancelling email draft", "target": "cancel_draft"}
+
     # --- mode-specific keyword fallbacks ---
     mode_result = _mode_keywords(text, mode)
     if mode_result:
@@ -434,11 +444,13 @@ def _mode_keywords(text: str, mode: str) -> dict:
             return {"action": "web_navigate", "speech": "Listing links", "target": "links"}
 
     if mode == "EMAIL":
-        if any(w in low for w in ["check", "inbox", "unread", "email"]):
+        if any(w in low for w in ["check", "inbox", "unread"]):
             return {"action": "email_action", "speech": "Checking your inbox", "target": "inbox"}
+        if "send" in low:
+            return {"action": "email_action", "speech": "Sending email", "target": "send_draft"}
         if "read" in low and ("email" in low or any(c.isdigit() for c in low)):
             return {"action": "email_action", "speech": "Reading email", "target": "read"}
-        if any(w in low for w in ["compose", "send", "reply", "write"]):
+        if any(w in low for w in ["compose", "write"]):
             return {"action": "email_action", "speech": "Preparing to compose", "target": "compose"}
 
     if mode == "IDE":

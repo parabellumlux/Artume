@@ -4,6 +4,7 @@
 import time
 import numpy as np
 import sounddevice as sd
+from typing import Optional
 from earcons import play_earcon
 
 _singleton = None
@@ -97,3 +98,10 @@ class ConfirmationDialog:
             q += f" Target: {target}."
         q += " Are you sure?"
         return self.ask(q)
+
+    def capture_phrase(self, prompt: str, timeout: int = 8) -> Optional[str]:
+        """Speak a prompt, listen for one spoken phrase, and return it (or None)."""
+        self._speak(prompt)
+        time.sleep(0.15)
+        play_earcon("listening")
+        return self._listen(timeout)

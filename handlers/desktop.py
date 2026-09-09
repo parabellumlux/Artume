@@ -1,5 +1,12 @@
 """Desktop command handlers — Clipboard, Window Manager, App Launcher, Notifications, Vault."""
+import re
 from earcons import play_earcon
+
+
+def _extract_pin(text):
+    """Pull a 3-8 digit PIN out of a transcribed phrase."""
+    m = re.search(r'(\d{3,8})', text or "")
+    return m.group(1) if m else None
 
 
 def handle(low_speech, ctx):
@@ -38,21 +45,46 @@ def handle(low_speech, ctx):
     # --- Credential Vault (global, any mode) ---
     if "unlock vault" in low_speech or "open vault" in low_speech:
         play_earcon("info")
-        tts.speak("Please say your PIN.")
-        play_earcon("listening")
-        tts.speak("Vault unlock requires voice PIN entry. Use 'unlock vault' in the next prompt with your PIN number.")
+        pin = _extract_pin(low_speech.replace("unlock vault", "").replace("open vault", ""))
+        if not pin:
+            phrase = ctx['confirm_dialog'].capture_phrase("Please say your PIN.")
+            pin = _extract_pin(phrase)
+        if pin:
+            result = vault.unlock(pin)
+            tts.speak(result)
+        else:
+            tts.speak("I could not hear your PIN. Try again.")
         play_earcon("success")
         return True
     if "create vault" in low_speech:
         play_earcon("info")
-        tts.speak("Creating credential vault. Say 'set vault PIN' followed by your 4 to 8 digit PIN.")
-        play_earcon("success")
+        import os
+        if os.path.exists(vault.vault_path):
+            protected = (not vault.is_unlocked
+                         or vault.list_services() != "No credentials stored.")
+            if protected:
+                replace = ctx['confirm_dialog'].ask(
+                    "A vault already exists. Replacing it will destroy stored credentials. Are you sure?")
+                if not replace:
+                    tts.speak("Vault creation cancelled.")
+                    play_earcon("warning")
+                    return True
+        pin = _extract_pin(low_speech.replace("create vault", ""))
+        if not pin:
+            phrase = ctx['confirm_dialog'].capture_phrase(
+                "Say a 4 to 8 digit PIN to protect your credentials.")
+            pin = _extract_pin(phrase)
+        if pin and len(pin) >= 4:
+            result = vault.create_vault(pin)
+            tts.speak(result)
+            play_earcon("success")
+            return True
+        play_earcon("warning")
+        tts.speak("Please say a 4 to 8 digit PIN. For example: create vault 1234")
         return True
     if "set vault pin" in low_speech:
-        import re
-        pin_match = re.search(r'(\d{4,8})', low_speech)
-        if pin_match:
-            pin = pin_match.group(1)
+        pin = _extract_pin(low_speech.replace("set vault pin", ""))
+        if pin and len(pin) >= 4:
             play_earcon("info")
             result = vault.create_vault(pin)
             tts.speak(result)
@@ -63,7 +95,39 @@ def handle(low_speech, ctx):
         return True
     if "store credential" in low_speech:
         play_earcon("info")
-        tts.speak("Credential storage requires interactive setup. Use the vault command to store credentials securely.")
+        if not vault.is_unlocked:
+            tts.speak("Vault is locked. Say 'unlock vault' first.")
+            play_earcon("warning")
+            return True
+        import re
+        inline = re.match(
+            r'store credential\s+(?:for\s+)?(\w+)\s+(?:user(?:name)?|login|as)\s+(\S+)\s+(?:password|pass)\s+(\S+)',
+            low_speech)
+        if inline:
+            service, username, password = inline.groups()
+            result = vault.store(service, {"username": username, "password": password})
+            tts.speak(f"{result} Username: {username}.")
+            play_earcon("success")
+            return True
+        dialog = ctx['confirm_dialog']
+        service = dialog.capture_phrase("Say the service name, like email or wifi.")
+        if not service:
+            tts.speak("I could not hear the service name. Try again.")
+            play_earcon("warning")
+            return True
+        service = service.replace(" ", "_").split()[0]
+        username = dialog.capture_phrase(f"Say the username for {service}.")
+        if not username:
+            tts.speak("I could not hear the username. Try again.")
+            play_earcon("warning")
+            return True
+        password = dialog.capture_phrase(f"Say the password for {service}.")
+        if not password:
+            tts.speak("I could not hear the password. Try again.")
+            play_earcon("warning")
+            return True
+        result = vault.store(service, {"username": username, "password": password})
+        tts.speak(f"{result} Username: {username}.")
         play_earcon("success")
         return True
     if "list credentials" in low_speech or "vault list" in low_speech:
@@ -139,7 +203,11 @@ def handle(low_speech, ctx):
             return True
         if "close window" in low_speech or "close this" in low_speech:
             play_earcon("warning")
-            tts.speak(window_mgr.close_window())
+            if ctx['confirm_dialog'].confirm_destructive("close the window"):
+                tts.speak(window_mgr.close_window())
+            else:
+                play_earcon("success")
+                tts.speak("Window close cancelled.")
             play_earcon("success")
             return True
         if "switch desktop" in low_speech:
@@ -172,7 +240,11 @@ def handle(low_speech, ctx):
             play_earcon("warning")
             app = low_speech.replace("quit app", "").replace("kill app", "").strip()
             if app:
-                tts.speak(app_launcher.quit_app(app))
+                if ctx['confirm_dialog'].confirm_destructive(f"quit {app}"):
+                    tts.speak(app_launcher.quit_app(app))
+                else:
+                    play_earcon("success")
+                    tts.speak(f"Quitting {app} cancelled.")
             else:
                 tts.speak("Which app to quit?")
             play_earcon("success")

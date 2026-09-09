@@ -1,5 +1,18 @@
 """Hardware command handlers — Bluetooth, WiFi, Audio Output, Power."""
+import re
 from earcons import play_earcon
+
+
+def _wifi_password(ssid, ctx):
+    """Resolve a WiFi password from the credential vault, or None."""
+    vault = ctx.get('vault')
+    if vault is None or not getattr(vault, 'is_unlocked', False):
+        return None
+    for key in (f"wifi_{ssid.lower()}", "wifi"):
+        creds = vault.get(key) or {}
+        if str(creds.get("ssid", "")).lower() == ssid.lower() and creds.get("password"):
+            return creds["password"]
+    return None
 
 
 def handle(low_speech, ctx):
@@ -96,7 +109,20 @@ def handle(low_speech, ctx):
             play_earcon("info")
             ssid = low_speech.replace("wifi connect", "").replace("connect to", "").replace("connect", "").strip()
             if ssid:
-                tts.speak(wifi_manager.connect(ssid))
+                inline = re.search(r'password\s+(\S+)', ssid)
+                password = inline.group(1) if inline else None
+                if inline:
+                    ssid = ssid.replace(inline.group(0), "").strip()
+                if password is None:
+                    password = _wifi_password(ssid, ctx)
+                if password is None:
+                    phrase = ctx['confirm_dialog'].capture_phrase(
+                        f"What is the password for {ssid}?")
+                    password = phrase.strip() if phrase else ""
+                if password:
+                    tts.speak(wifi_manager.connect(ssid, password))
+                else:
+                    tts.speak(wifi_manager.connect(ssid))
             else:
                 tts.speak("Which network? Say 'wifi connect' followed by network name.")
             play_earcon("success")

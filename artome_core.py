@@ -43,7 +43,7 @@ def _init_all():
     from artome_ide.git_engine import GitEngine
     from artome_ide.terminal_engine import TerminalEngine
 
-    from credential_vault import CredentialVault
+    from credential_vault import get_vault
     from notification_center import get_notification_center
     from clipboard_manager import ClipboardManager
     from window_manager import WindowManager
@@ -77,7 +77,7 @@ def _init_all():
     git_engine = _init_engine("GitEngine", lambda: GitEngine(project_root=os.path.dirname(os.path.abspath(__file__))))
     terminal_engine = _init_engine("TerminalEngine", TerminalEngine)
 
-    vault = _init_engine("CredentialVault", CredentialVault)
+    vault = get_vault()
     notification_center = get_notification_center()
     notification_center.set_speak_callback(lambda text: tts.speak(text))
     clipboard = _init_engine("ClipboardManager", ClipboardManager)
@@ -144,11 +144,11 @@ def execute_action(intent, user_speech, current_mode, ctx):
     # 1. Screen Summary
     if action == "screen_summary" or "screen" in low_speech or target == "COMMAND:SCREEN_SUMMARY":
         play_earcon("success")
-        if speech:
-            tts.speak(speech)
-        else:
+        try:
             summary = ctx['screen_reader'].generate_screen_summary_payload()
-            tts.speak(f"Screen summary: {summary[:300]}")
+            tts.speak(f"Screen summary: {str(summary)[:300]}")
+        except Exception:
+            tts.speak(speech or "Screen summary is not available.")
         return current_mode
 
     # 1b. Calculator
@@ -290,7 +290,7 @@ def execute_action(intent, user_speech, current_mode, ctx):
             mail_client = ctx['mail_client']
             if mail_client is None:
                 tts.speak("Email client is not available.")
-            elif target == "fetch_inbox":
+            elif target in ("fetch_inbox", "inbox"):
                 # Use vault credentials if available
                 from credential_vault import get_vault
                 vault = get_vault()
@@ -304,11 +304,52 @@ def execute_action(intent, user_speech, current_mode, ctx):
                     tts.speak(result)
                 else:
                     tts.speak("No email credentials stored. Say 'store credential' to set up.")
-            elif target.startswith("read_email:"):
-                idx = int(target.split(":")[1])
+            elif target == "compose":
+                dialog = ctx['confirm_dialog']
+                recipient = dialog.capture_phrase("Who should I send the email to?")
+                if not recipient:
+                    tts.speak("I could not hear the recipient. Try again.")
+                    return current_mode
+                subject = dialog.capture_phrase("What is the subject?")
+                body = dialog.capture_phrase("What should the message say?")
+                if not body:
+                    tts.speak("I could not hear the message. Try again.")
+                    return current_mode
+                result = mail_client.prepare_draft(recipient, subject or "(no subject)", body)
+                tts.speak(result)
+            elif target == "send_draft":
+                from credential_vault import get_vault
+                vault = get_vault()
+                creds = vault.get("email")
+                draft = mail_client.active_draft
+                if not draft:
+                    tts.speak("No draft to send. Say 'compose email' first.")
+                elif not creds:
+                    tts.speak("No email credentials stored. Say 'store credential' to set up.")
+                else:
+                    confirm = ctx['confirm_dialog'].ask(
+                        f"Send the email to {draft.get('to', '?')}?")
+                    if confirm:
+                        smtp_server = creds.get("smtp_server") or creds.get("imap_server", "")
+                        smtp_port = int(creds.get("smtp_port") or 465)
+                        result = mail_client.send_draft(
+                            smtp_server, smtp_port,
+                            creds.get("username", ""), creds.get("password", ""))
+                        tts.speak(result)
+                    else:
+                        tts.speak("Email send cancelled.")
+            elif target == "cancel_draft":
+                mail_client.active_draft = None
+                play_earcon("warning")
+                tts.speak("Email draft cancelled.")
+            elif target.startswith("read_email:") or target == "read":
+                if target == "read":
+                    idx = 1
+                else:
+                    idx = int(target.split(":")[1]) or 1
                 tts.speak(mail_client.read_email_audio(idx))
             elif target.startswith("attachments:"):
-                idx = int(target.split(":")[1])
+                idx = int(target.split(":")[1]) or 1
                 tts.speak(mail_client.read_attachments(idx))
             return current_mode
 
@@ -341,7 +382,11 @@ def execute_action(intent, user_speech, current_mode, ctx):
                     tts.speak("Say 'rename [old name] to [new name]'.")
             elif target.startswith("delete:"):
                 name = target.split(":", 1)[1]
-                tts.speak(file_browser.delete_file(name))
+                if ctx['confirm_dialog'].confirm_destructive(f"delete file {name}"):
+                    tts.speak(file_browser.delete_file(name))
+                else:
+                    play_earcon("success")
+                    tts.speak(f"File {name} not deleted.")
             elif target.startswith("create_file:"):
                 name = target.split(":", 1)[1]
                 tts.speak(file_browser.create_file(name))

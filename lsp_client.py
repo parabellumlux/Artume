@@ -196,14 +196,56 @@ class DAPClient:
         try:
             import socket
             self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self._sock.settimeout(5)
             self._sock.connect((self.host, self.port))
             self._running = True
             return True
         except Exception:
             return False
 
+    def _read_message(self) -> Optional[Dict]:
+        """Read one Content-Length-framed DAP message (event or response)."""
+        try:
+            header = b""
+            while b"\r\n\r\n" not in header:
+                chunk = self._sock.recv(1)
+                if not chunk:
+                    return None
+                header += chunk
+            length = 0
+            for line in header.split(b"\r\n"):
+                if line.lower().startswith(b"content-length:"):
+                    length = int(line.split(b":")[1].strip())
+                    break
+            if length <= 0:
+                return None
+            body = b""
+            while len(body) < length:
+                chunk = self._sock.recv(length - len(body))
+                if not chunk:
+                    return None
+                body += chunk
+            return json.loads(body)
+        except Exception:
+            return None
+
+    def initialize(self) -> bool:
+        """Perform the DAP handshake (must precede launch/breakpoints)."""
+        result = self._send("initialize", {
+            "adapterID": "debugpy",
+            "clientID": "artome",
+            "linesStartAt1": True,
+            "columnsStartAt1": True,
+            "pathFormat": "path",
+        })
+        return result is not None
+
+    def configuration_done(self) -> bool:
+        """Signal the debug adapter to start executing the target."""
+        return self._send("configurationDone", {}) is not None
+
     def _send(self, command: str, arguments: Optional[Dict] = None) -> Optional[Dict]:
-        """Send a DAP request."""
+        """Send a DAP request, skipping interleaved events, and return the response body."""
         if not self._sock or not self._running:
             return None
         self._seq += 1
@@ -218,35 +260,25 @@ class DAPClient:
             self._sock.sendall(content.encode())
         except Exception:
             return None
-        # Read response
-        try:
-            header = b""
-            while b"\r\n\r\n" not in header:
-                chunk = self._sock.recv(1)
-                if not chunk:
-                    return None
-                header += chunk
-            length = int(header.split(b"Content-Length:")[1].split(b"\r\n")[0])
-            body = b""
-            while len(body) < length:
-                chunk = self._sock.recv(length - len(body))
-                if not chunk:
-                    return None
-                body += chunk
-            resp = json.loads(body)
+        while True:
+            resp = self._read_message()
+            if resp is None:
+                return None
+            if resp.get("type") == "event":
+                continue
             return resp.get("body", resp)
-        except Exception:
-            return None
 
     def launch(self, program: str, args: Optional[List[str]] = None, cwd: Optional[str] = None) -> str:
         """Launch a debug session."""
         result = self._send("launch", {
+            "type": "python",
+            "request": "launch",
             "program": program,
             "args": args or [],
             "cwd": cwd or os.getcwd(),
             "console": "integratedTerminal",
         })
-        return "Debug session started." if result else "Failed to start debug session."
+        return "Debug session ready." if result else "Failed to start debug session."
 
     def set_breakpoint(self, file_path: str, line: int) -> str:
         """Set a breakpoint at a line."""

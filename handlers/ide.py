@@ -3,6 +3,17 @@ import os
 from earcons import play_earcon
 
 
+def _cursor_position():
+    """Return (line, character) for LSP (0-indexed) from the IDE daemon cursor."""
+    try:
+        from artome_ide import get_client
+        cursor = get_client().get_cursor()
+        line = int(cursor.get("line", 1))
+        return (max(0, line - 1), int(cursor.get("column", 0) or 0))
+    except Exception:
+        return (0, 0)
+
+
 def handle(low_speech, target_lower, target, ctx):
     """Handle IDE mode commands. Returns True if handled."""
     tts = ctx['tts']
@@ -289,7 +300,8 @@ def handle(low_speech, target_lower, target, ctx):
             from lsp_client import LSPClient
             lsp = LSPClient(["pylsp"], root_uri=os.path.dirname(ide.active_file))
             if lsp.start():
-                result = lsp.go_to_definition(ide.active_file, 0, 0)
+                lsp_line, lsp_col = _cursor_position()
+                result = lsp.go_to_definition(ide.active_file, lsp_line, lsp_col)
                 tts.speak(result)
                 lsp.stop()
             else:
@@ -306,7 +318,8 @@ def handle(low_speech, target_lower, target, ctx):
             from lsp_client import LSPClient
             lsp = LSPClient(["pylsp"], root_uri=os.path.dirname(ide.active_file))
             if lsp.start():
-                result = lsp.find_references(ide.active_file, 0, 0)
+                lsp_line, lsp_col = _cursor_position()
+                result = lsp.find_references(ide.active_file, lsp_line, lsp_col)
                 tts.speak(result)
                 lsp.stop()
             else:
@@ -323,7 +336,8 @@ def handle(low_speech, target_lower, target, ctx):
             from lsp_client import LSPClient
             lsp = LSPClient(["pylsp"], root_uri=os.path.dirname(ide.active_file))
             if lsp.start():
-                result = lsp.hover(ide.active_file, 0, 0)
+                lsp_line, lsp_col = _cursor_position()
+                result = lsp.hover(ide.active_file, lsp_line, lsp_col)
                 tts.speak(result)
                 lsp.stop()
             else:
@@ -345,7 +359,8 @@ def handle(low_speech, target_lower, target, ctx):
                 from lsp_client import LSPClient
                 lsp = LSPClient(["pylsp"], root_uri=os.path.dirname(ide.active_file))
                 if lsp.start():
-                    result = lsp.rename(ide.active_file, 0, 0, new_name)
+                    lsp_line, lsp_col = _cursor_position()
+                    result = lsp.rename(ide.active_file, lsp_line, lsp_col, new_name)
                     tts.speak(result)
                     lsp.stop()
                 else:
@@ -362,13 +377,9 @@ def handle(low_speech, target_lower, target, ctx):
                                         "start debug session"]):
         play_earcon("warning")
         if ide.active_file and os.path.exists(ide.active_file):
-            from lsp_client import DAPClient
-            dap = DAPClient()
-            if dap.connect():
-                result = dap.launch(ide.active_file)
-                tts.speak(result)
-            else:
-                tts.speak("Debug adapter not available on port 4711.")
+            from debug_adapter import get_debug_adapter
+            result = get_debug_adapter().start(ide.active_file)
+            tts.speak(result)
         else:
             tts.speak("No active file loaded.")
         play_earcon("success")
@@ -379,14 +390,13 @@ def handle(low_speech, target_lower, target, ctx):
         nums = re.findall(r'\d+', low_speech)
         line = int(nums[0]) if nums else 1
         play_earcon("info")
-        if ide.active_file and os.path.exists(ide.active_file):
-            from lsp_client import DAPClient
-            dap = DAPClient()
-            if dap.connect():
-                result = dap.set_breakpoint(ide.active_file, line)
-                tts.speak(result)
-            else:
-                tts.speak("Debug adapter not available.")
+        from debug_adapter import get_debug_adapter
+        client = get_debug_adapter().session_client()
+        if client is None:
+            tts.speak("No active debug session. Say debug file first.")
+        elif ide.active_file and os.path.exists(ide.active_file):
+            result = client.set_breakpoint(ide.active_file, line)
+            tts.speak(result)
         else:
             tts.speak("No active file loaded.")
         play_earcon("success")
@@ -394,22 +404,18 @@ def handle(low_speech, target_lower, target, ctx):
 
     if any(kw in low_speech for kw in ["continue", "resume", "keep running"]):
         play_earcon("info")
-        from lsp_client import DAPClient
-        dap = DAPClient()
-        if dap.connect():
-            result = dap.continue_execution()
-            tts.speak(result)
-        else:
-            tts.speak("No active debug session.")
+        from debug_adapter import get_debug_adapter
+        result = get_debug_adapter().run()
+        tts.speak(result)
         play_earcon("success")
         return True
 
     if any(kw in low_speech for kw in ["step over", "next line", "step"]):
         play_earcon("info")
-        from lsp_client import DAPClient
-        dap = DAPClient()
-        if dap.connect():
-            result = dap.step_over()
+        from debug_adapter import get_debug_adapter
+        client = get_debug_adapter().session_client()
+        if client:
+            result = client.step_over()
             tts.speak(result)
         else:
             tts.speak("No active debug session.")
@@ -418,10 +424,10 @@ def handle(low_speech, target_lower, target, ctx):
 
     if any(kw in low_speech for kw in ["step into", "go into", "enter function"]):
         play_earcon("info")
-        from lsp_client import DAPClient
-        dap = DAPClient()
-        if dap.connect():
-            result = dap.step_into()
+        from debug_adapter import get_debug_adapter
+        client = get_debug_adapter().session_client()
+        if client:
+            result = client.step_into()
             tts.speak(result)
         else:
             tts.speak("No active debug session.")
@@ -430,14 +436,28 @@ def handle(low_speech, target_lower, target, ctx):
 
     if any(kw in low_speech for kw in ["step out", "exit function", "return from"]):
         play_earcon("info")
-        from lsp_client import DAPClient
-        dap = DAPClient()
-        if dap.connect():
-            result = dap.step_out()
+        from debug_adapter import get_debug_adapter
+        client = get_debug_adapter().session_client()
+        if client:
+            result = client.step_out()
             tts.speak(result)
         else:
             tts.speak("No active debug session.")
         play_earcon("success")
+        return True
+
+    if low_speech.startswith("evaluate") or "check variable" in low_speech:
+        expr = low_speech.replace("evaluate", "").replace("check variable", "").strip()
+        if expr:
+            play_earcon("info")
+            from debug_adapter import get_debug_adapter
+            client = get_debug_adapter().session_client()
+            if client:
+                result = client.evaluate(expr)
+                tts.speak(result)
+            else:
+                tts.speak("No active debug session.")
+            play_earcon("success")
         return True
 
     # --- IDE daemon commands ---
@@ -490,7 +510,18 @@ def handle(low_speech, target_lower, target, ctx):
         play_earcon("scope_exit_function")
     elif "line" in target_lower or "lines" in target_lower:
         play_earcon("info")
-        tts.speak(ide.read_lines(start_line=1, count=10))
+        import re
+        nums = [int(n) for n in re.findall(r'\d+', low_speech)]
+        if len(nums) >= 2:
+            start, end = nums[0], nums[1]
+            if end < start:
+                start, end = end, start
+            tts.speak(ide.read_lines(start_line=start, count=end - start + 1))
+        elif len(nums) == 1:
+            tts.speak(ide.read_lines(start_line=nums[0], count=1))
+        else:
+            line, _col = _cursor_position()
+            tts.speak(ide.read_lines(start_line=line + 1, count=10))
     elif "next" in low_speech:
         play_earcon("scope_enter_function")
         tts.speak(ide.read_function(""))
