@@ -178,10 +178,22 @@ def handle(low_speech, target_lower, target, speech, action, current_mode, ctx):
         if mail_client is None:
             tts.speak("Mail Client is not available.")
             return True, current_mode
+        import re
+        nums = [int(n) for n in re.findall(r'\d+', low_speech)]
         if "check" in target_lower or "inbox" in target_lower:
-            tts.speak("Checking email inbox... You have 2 unread emails.")
+            from credential_vault import get_vault
+            creds = get_vault().get("email")
+            if creds:
+                result = mail_client.fetch_inbox(
+                    creds.get("imap_server", ""),
+                    creds.get("username", ""),
+                    creds.get("password", ""))
+            else:
+                result = "No email credentials stored. Say 'store credential' to set up."
+            tts.speak(result)
         elif "read" in target_lower:
-            tts.speak(mail_client.read_email_audio(1))
+            idx = nums[0] if nums else 1
+            tts.speak(mail_client.read_email_audio(idx))
         play_earcon("success")
         return True, current_mode
 

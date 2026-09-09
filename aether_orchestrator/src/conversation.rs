@@ -1039,14 +1039,18 @@ impl ConversationLoop {
         self.config.voice_enabled
     }
 
-    /// Synthesize speech from text using the TTS engine.
-    /// Returns 22050 Hz f32 PCM samples.
+    /// Synthesize speech from text using the TTS engine, then spatialise it
+    /// through the binaural mixer.
+    /// Returns interleaved stereo f32 PCM samples for the "Primary Voice"
+    /// source (centre; delay-neutral, so it stays balanced L/R).
     #[cfg(feature = "tts")]
     pub fn synthesize_speech(&mut self, text: &str) -> anyhow::Result<Vec<f32>> {
         if self.tts.is_loaded() {
-            self.tts
+            let mono = self
+                .tts
                 .synthesize(text)
-                .map_err(|e| anyhow::anyhow!("TTS failed: {}", e))
+                .map_err(|e| anyhow::anyhow!("TTS failed: {}", e))?;
+            Ok(self.spatial_mixer.render_source("Primary Voice", &mono))
         } else {
             Err(anyhow::anyhow!("TTS engine not loaded"))
         }

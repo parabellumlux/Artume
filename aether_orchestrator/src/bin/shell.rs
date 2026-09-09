@@ -243,10 +243,10 @@ async fn main() -> anyhow::Result<()> {
                                             if let Ok(samples) = loop_.synthesize_speech(&response)
                                             {
                                                 eprintln!(
-                                                    "       (TTS: {} samples)",
+                                                    "       (TTS: {} stereo samples)",
                                                     samples.len()
                                                 );
-                                                out.play(samples, 22050);
+                                                out.play_stereo(samples, 22050);
                                             }
                                         }
                                     }

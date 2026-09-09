@@ -44,6 +44,7 @@ impl TtsService {
                         let _ = out_tx.send(PlaybackRequest {
                             samples,
                             sample_rate: 22050,
+                            channels: 1,
                         });
                     }
                     Err(e) => {

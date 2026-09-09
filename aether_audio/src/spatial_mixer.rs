@@ -165,6 +165,13 @@ impl BinauralKernel {
         write_ptr: usize,
         contra_state: &mut f32,
     ) -> (f32, f32) {
+        // A centre source is heard directly and equally by both ears — there
+        // is no ITD and no head shadow, so the delayed/contralateral path
+        // must not colour the output.
+        if self.itd_samples.abs() < 1e-4 {
+            return (sample, sample);
+        }
+
         // Fractional delay via linear interpolation.
         let delay = self.itd_samples;
         let int_delay = delay as usize;
@@ -347,6 +354,29 @@ impl SpatialMixer {
         (soft_clip(left_out), soft_clip(right_out))
     }
 
+    /// Spatialise a mono sample buffer through a single named source and
+    /// return interleaved stereo `(L, R, L, R, ...)`, ready for playback.
+    ///
+    /// If the source is not registered the buffer is passed through as
+    /// duplicate mono (centre-identical) so callers always get valid stereo.
+    pub fn render_source(&mut self, label: &str, input: &[f32]) -> Vec<f32> {
+        let mut out = vec![0.0_f32; input.len() * 2];
+        let delay_len = self.delay_line.len();
+        for (i, &sample) in input.iter().enumerate() {
+            self.delay_line[self.delay_write_ptr % delay_len] = sample;
+            self.delay_write_ptr = (self.delay_write_ptr + 1) % delay_len;
+            let (l, r) = match self.sources.iter_mut().find(|s| s.label == label) {
+                Some(source) => {
+                    source.process_sample(sample, &self.delay_line, self.delay_write_ptr)
+                }
+                None => (sample, sample),
+            };
+            out[2 * i] = l;
+            out[2 * i + 1] = r;
+        }
+        out
+    }
+
     /// Initialise PipeWire and connect the mixer as a virtual audio sink.
     ///
     /// This creates a PipeWire stream that receives audio from the graph
@@ -517,6 +547,60 @@ mod tests {
             assert!(!l.is_nan() && !r.is_nan());
             assert!(l.is_finite() && r.is_finite());
         }
+    }
+
+    #[test]
+    fn test_render_source_centre_is_balanced() {
+        // A centred source renders as near-equal left/right.
+        let mut mixer = SpatialMixer::new();
+        mixer.add_source(VirtualSource::new("Primary Voice", SpatialPosition::CENTRE));
+        let input: Vec<f32> = (0..200).map(|i| (i as f32 / 50.0).sin()).collect();
+        let stereo = mixer.render_source("Primary Voice", &input);
+        assert_eq!(stereo.len(), input.len() * 2);
+        for frame in stereo.chunks(2) {
+            assert!((frame[0] - frame[1]).abs() < 1e-3);
+        }
+    }
+
+    #[test]
+    fn test_render_source_right_pans_ipsilateral() {
+        // An off-right source is louder in the right channel.
+        let mut mixer = SpatialMixer::new();
+        mixer.add_source(VirtualSource::new(
+            "System Alert",
+            SpatialPosition::SOFT_RIGHT_45,
+        ));
+        let input: Vec<f32> = (0..400).map(|i| (i as f32 / 40.0).sin()).collect();
+        let stereo = mixer.render_source("System Alert", &input);
+        let right_energy: f32 = stereo[1..].iter().step_by(2).map(|s| s * s).sum();
+        let left_energy: f32 = stereo.iter().step_by(2).map(|s| s * s).sum();
+        assert!(
+            right_energy > left_energy * 1.5,
+            "right {right_energy} vs left {left_energy}"
+        );
+    }
+
+    #[test]
+    fn test_render_source_unknown_label_passthrough() {
+        let mut mixer = SpatialMixer::new();
+        mixer.add_source(VirtualSource::new("Primary Voice", SpatialPosition::CENTRE));
+        let input = vec![0.25_f32, -0.5, 1.0];
+        let stereo = mixer.render_source("Missing Source", &input);
+        assert_eq!(stereo, vec![0.25, 0.25, -0.5, -0.5, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn test_render_source_updates_delay_line() {
+        // Repeated renders must not leave stale ITD state between sources.
+        let mut mixer = SpatialMixer::new();
+        mixer.add_source(VirtualSource::new(
+            "System Alert",
+            SpatialPosition::SOFT_LEFT_45,
+        ));
+        let base: Vec<f32> = vec![1.0, 1.0, 1.0, 1.0, 1.0];
+        let first = mixer.render_source("System Alert", &base);
+        let second = mixer.render_source("System Alert", &base);
+        assert_eq!(first, second);
     }
 
     #[test]

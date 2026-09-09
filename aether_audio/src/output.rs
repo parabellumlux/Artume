@@ -23,10 +23,12 @@ pub struct AudioOutput {
 /// A request to play audio.
 #[derive(Clone)]
 pub struct PlaybackRequest {
-    /// PCM f32 samples (mono).
+    /// PCM f32 samples (mono, or interleaved stereo when `channels` is 2).
     pub samples: Vec<f32>,
     /// Sample rate of the samples.
     pub sample_rate: u32,
+    /// Channel count of the samples (1 = mono, 2 = interleaved stereo).
+    pub channels: u16,
 }
 
 impl AudioOutput {
@@ -87,25 +89,43 @@ impl AudioOutput {
             };
 
             let sample_rate = config.sample_rate();
-            let channels = config.channels() as usize;
-            info!("AudioOutput: device config: {sample_rate} Hz, {channels} channels");
+            let device_channels = config.channels() as usize;
+            info!("AudioOutput: device config: {sample_rate} Hz, {device_channels} channels");
 
             while let Ok(req) = rx.recv() {
-                // Resample to device rate if needed
+                let in_channels = req.channels.max(1) as usize;
+
+                // Resample to device rate if needed (per-channel).
                 let samples = if req.sample_rate != sample_rate {
-                    resample(&req.samples, req.sample_rate, sample_rate)
+                    resample_channels(&req.samples, req.sample_rate, sample_rate, in_channels)
                 } else {
                     req.samples
                 };
 
-                // Duplicate mono to stereo if needed
-                let playback_samples: Vec<f32> = if channels == 2 {
-                    samples.iter().flat_map(|&s| vec![s, s]).collect()
-                } else {
-                    samples
+                // Convert channel count to what the device expects.
+                // NOTE: for interleaved stereo buffers, resampling above has
+                // already re-interleaved them, so slices below are frames.
+                let playback_samples: Vec<f32> = match (in_channels, device_channels) {
+                    (2, 2) | (1, 1) => samples,
+                    (1, 2) => samples.iter().flat_map(|&s| vec![s, s]).collect(),
+                    (2, 1) => samples.chunks(2).map(|f| (f[0] + f[1]) * 0.5).collect(),
+                    // Edge case: >2 channels flattened to device count.
+                    (n, 2) if n > 2 => {
+                        let mut out = Vec::with_capacity(samples.len() / n * 2);
+                        for frame in samples.chunks(n) {
+                            let mut sum = 0.0_f32;
+                            for &s in frame.iter().take(n) {
+                                sum += s;
+                            }
+                            let mix = sum / n as f32;
+                            out.extend_from_slice(&[mix, mix]);
+                        }
+                        out
+                    }
+                    _ => samples,
                 };
 
-                let total_frames = playback_samples.len() / channels;
+                let total_frames = playback_samples.len() / device_channels;
                 let played = Arc::new(AtomicBool::new(false));
                 let played_clone = played.clone();
                 let stream_samples = Arc::new(playback_samples);
@@ -170,7 +190,8 @@ impl AudioOutput {
             info!("AudioOutput: using PulseAudio sink: {sink}");
 
             while let Ok(req) = rx.recv() {
-                // Convert f32 samples to s16le bytes
+                // Convert f32 samples to s16le bytes (interleaved frames).
+                let in_channels = req.channels.max(1) as usize;
                 let mut raw: Vec<u8> = Vec::with_capacity(req.samples.len() * 2);
                 for &sample in &req.samples {
                     let clamped = sample.clamp(-1.0, 1.0);
@@ -186,7 +207,8 @@ impl AudioOutput {
                         "--rate",
                         &req.sample_rate.to_string(),
                         "--format=s16le",
-                        "--channels=1",
+                        "--channels",
+                        &in_channels.to_string(),
                         "--raw",
                     ])
                     .stdin(Stdio::piped())
@@ -215,11 +237,21 @@ impl AudioOutput {
         Ok(Self { tx })
     }
 
-    /// Play PCM samples. Non-blocking — returns immediately.
+    /// Play mono PCM samples. Non-blocking — returns immediately.
     pub fn play(&self, samples: Vec<f32>, sample_rate: u32) {
         let _ = self.tx.send(PlaybackRequest {
             samples,
             sample_rate,
+            channels: 1,
+        });
+    }
+
+    /// Play interleaved stereo PCM samples. Non-blocking — returns immediately.
+    pub fn play_stereo(&self, samples: Vec<f32>, sample_rate: u32) {
+        let _ = self.tx.send(PlaybackRequest {
+            samples,
+            sample_rate,
+            channels: 2,
         });
     }
 
@@ -246,6 +278,29 @@ fn resample(input: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
         let src_idx = (i as f64 * ratio) as usize;
         let idx = src_idx.min(input.len() - 1);
         output.push(input[idx]);
+    }
+    output
+}
+
+/// Resample an interleaved multi-channel buffer, rate-converting each
+/// channel independently and re-interleaving the result.
+fn resample_channels(input: &[f32], from_rate: u32, to_rate: u32, channels: usize) -> Vec<f32> {
+    if from_rate == to_rate {
+        return input.to_vec();
+    }
+    if channels == 1 {
+        return resample(input, from_rate, to_rate);
+    }
+    let ratio = from_rate as f64 / to_rate as f64;
+    let out_frames = (input.len() / channels) as f64 / ratio;
+    let out_len = (out_frames as usize) * channels;
+    let mut output = vec![0.0_f32; out_len];
+    for ch in 0..channels {
+        for i in 0..(out_len / channels) {
+            let src_frame = (i as f64 * ratio) as usize;
+            let src_idx = (src_frame * channels + ch).min(input.len() - channels);
+            output[i * channels + ch] = input[src_idx];
+        }
     }
     output
 }
