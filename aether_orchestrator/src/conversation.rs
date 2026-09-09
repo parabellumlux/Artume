@@ -246,23 +246,50 @@ impl ConversationLoop {
         }
     }
 
-    /// Internal: start the wake word detector.
+/// Resolve the wake word configuration from the environment.
+///
+/// Env overrides (all optional):
+///   ARTUME_WAKE_MODEL      built-in model name: alexa | hey_mycroft | hey_jarvis
+///                          (default: `hey_jarvis`)
+///   ARTUME_WAKE_THRESHOLD  detection threshold 0.0-1.0 (default: 0.3)
+///   ARTUME_WAKE_DEVICE     microphone device name substring
+///   ARTUME_WAKE_MODEL_PATH custom .onnx path — requires ARTUME_WAKE_TRIGGER_WORD
+///   ARTUME_WAKE_TRIGGER_WORD spoken phrase for the custom model
+pub fn wake_config_from_env() -> WakeWordConfig {
+    let model_source = match std::env::var("ARTUME_WAKE_MODEL").as_deref() {
+        Ok("alexa") => WakeWordModel::BuiltInAlexa,
+        Ok("hey_mycroft") => WakeWordModel::BuiltInHeyMycroft,
+        Ok("custom") | Ok(_) => {
+            let path = std::env::var("ARTUME_WAKE_MODEL_PATH")
+                .unwrap_or_else(|_| "models/hey_artume.onnx".to_string());
+            let trigger_word = std::env::var("ARTUME_WAKE_TRIGGER_WORD")
+                .unwrap_or_else(|_| "Hey Artume".to_string());
+            WakeWordModel::Custom { path, trigger_word }
+        }
+        _ => WakeWordModel::BuiltInHeyJarvis,
+    };
+    let threshold = std::env::var("ARTUME_WAKE_THRESHOLD")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .unwrap_or(0.3);
+    WakeWordConfig {
+        model_source,
+        threshold: threshold.clamp(0.0, 1.0),
+        device_name: std::env::var("ARTUME_WAKE_DEVICE").ok(),
+    }
+}
+
+/// Internal: start the wake word detector.
     fn start_wake_word_inner() -> Option<WakeWordDetector> {
-        // Uses the built-in "Hey Jarvis" OpenWakeWord model as a placeholder
-        // until a custom "Hey Artume" model is trained.
-        // To train: collect ~50 samples of "Hey Artume", use OpenWakeWord
-        // training tools, then use:
-        //   WakeWordModel::Custom { path: "models/hey_artume.onnx", trigger_word: "Hey Artume" }
-        let config = WakeWordConfig {
-            model_source: WakeWordModel::BuiltInHeyJarvis,
-            threshold: 0.3,
-            device_name: None,
-        };
+        // Uses the built-in "Hey Jarvis" OpenWakeWord model until a custom
+        // "Hey Artume" model is trained (see wake_config_from_env for env
+        // overrides, including a custom .onnx via ARTUME_WAKE_MODEL_PATH).
+        let config = Self::wake_config_from_env();
 
         match WakeWordDetector::start(config) {
             Ok(detector) => {
                 info!(
-                    "WakeWordDetector: listening for wake word (placeholder: 'Hey Jarvis' model)"
+                    "WakeWordDetector: listening for wake word (model source from env/config)"
                 );
                 Some(detector)
             }
@@ -1077,6 +1104,97 @@ impl ConversationLoop {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Run `f` with exclusive, clean access to the wake-word env vars.
+    fn with_env_lock(f: impl FnOnce(), restore: &[&str]) {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        for v in WAKE_ENV_VARS {
+            std::env::remove_var(v);
+        }
+        f();
+        for v in restore {
+            std::env::remove_var(v);
+        }
+    }
+
+    const WAKE_ENV_VARS: [&str; 5] = [
+        "ARTUME_WAKE_MODEL",
+        "ARTUME_WAKE_THRESHOLD",
+        "ARTUME_WAKE_DEVICE",
+        "ARTUME_WAKE_MODEL_PATH",
+        "ARTUME_WAKE_TRIGGER_WORD",
+    ];
+
+    #[test]
+    fn test_wake_config_defaults_to_hey_jarvis() {
+        with_env_lock(
+            || {
+                let config = ConversationLoop::wake_config_from_env();
+                assert!(matches!(
+                    config.model_source,
+                    WakeWordModel::BuiltInHeyJarvis
+                ));
+                assert_eq!(config.threshold, 0.3);
+                assert!(config.device_name.is_none());
+            },
+            &[],
+        );
+    }
+
+    #[test]
+    fn test_wake_config_env_overrides() {
+        let mut source: Option<WakeWordModel> = None;
+        let mut threshold = 0.0;
+        let mut device: Option<String> = None;
+        with_env_lock(
+            || {
+                std::env::set_var("ARTUME_WAKE_MODEL", "alexa");
+                std::env::set_var("ARTUME_WAKE_THRESHOLD", "0.55");
+                std::env::set_var("ARTUME_WAKE_DEVICE", "usb-mic");
+                let config = ConversationLoop::wake_config_from_env();
+                source = Some(config.model_source);
+                threshold = config.threshold;
+                device = config.device_name;
+            },
+            &[
+                "ARTUME_WAKE_MODEL",
+                "ARTUME_WAKE_THRESHOLD",
+                "ARTUME_WAKE_DEVICE",
+            ],
+        );
+        assert!(matches!(source, Some(WakeWordModel::BuiltInAlexa)));
+        assert_eq!(threshold, 0.55);
+        assert_eq!(device.as_deref(), Some("usb-mic"));
+    }
+
+    #[test]
+    fn test_wake_config_custom_model_path() {
+        let mut model = WakeWordModel::BuiltInHeyJarvis;
+        with_env_lock(
+            || {
+                std::env::set_var("ARTUME_WAKE_MODEL", "custom");
+                std::env::set_var("ARTUME_WAKE_MODEL_PATH", "/opt/models/artume.onnx");
+                std::env::set_var("ARTUME_WAKE_TRIGGER_WORD", "Hey Artume");
+                let config = ConversationLoop::wake_config_from_env();
+                model = config.model_source;
+            },
+            &[
+                "ARTUME_WAKE_MODEL",
+                "ARTUME_WAKE_MODEL_PATH",
+                "ARTUME_WAKE_TRIGGER_WORD",
+            ],
+        );
+        match model {
+            WakeWordModel::Custom { path, trigger_word } => {
+                assert_eq!(path, "/opt/models/artume.onnx");
+                assert_eq!(trigger_word, "Hey Artume");
+            }
+            other => panic!("expected custom model, got {other:?}"),
+        }
+    }
 
     #[tokio::test]
     async fn test_conversation_loop_creation() {

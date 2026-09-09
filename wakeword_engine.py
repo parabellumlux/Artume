@@ -1,13 +1,20 @@
 #!/usr/bin/env python3
 """Artome Audio Wake-Word Engine - Lightweight voice activation detector."""
 
+import os
 import re
+
+DEFAULT_WAKE_WORDS = ["artome", "hey artome", "r2", "hey r2", "assistant", "computer"]
 
 class WakeWordDetector:
     """Lightweight wake-word & activation phrase detector for Artome OS."""
 
     def __init__(self, wake_words=None):
-        self.wake_words = wake_words or ["artome", "hey artome", "r2", "hey r2", "assistant", "computer"]
+        if wake_words is None:
+            configured = os.environ.get("ARTUME_WAKE_WORDS", "").strip()
+            wake_words = [w.strip() for w in configured.split(",") if w.strip()] \
+                if configured else DEFAULT_WAKE_WORDS
+        self.wake_words = wake_words
         self.wake_word_enabled = True
 
     def toggle_wake_word(self, enable=None):
