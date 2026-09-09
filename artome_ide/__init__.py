@@ -196,6 +196,34 @@ def _structure_symbols(kinds=("function", "class")):
         key=lambda s: s.get("start_line", 0))
 
 
+def skim_structure(kinds=("function", "class"), max_items: int = 15) -> str:
+    """Spoken table-of-contents: kind, name, and line for each symbol."""
+    try:
+        structure = get_client().get_structure()
+        symbols = _structure_symbols(kinds)
+        total_lines = int(structure.get("total_lines", 0))
+        if not symbols:
+            return f"File has {total_lines} lines and no top-level symbols."
+        shown = symbols[:max_items]
+        count_by_kind: dict = {}
+        for s in symbols:
+            count_by_kind[s.get("kind", "symbol")] = count_by_kind.get(
+                s.get("kind", "symbol"), 0) + 1
+        kind_rank = {"function": 0, "method": 1, "class": 2, "symbol": 3}
+        ordered = sorted(count_by_kind.items(),
+                         key=lambda kv: kind_rank.get(kv[0], 9))
+        summary_parts = [f"{n} {k}{'s' if n != 1 else ''}" for k, n in ordered]
+        lines = []
+        for s in shown:
+            lines.append(f"{s.get('name')}, line {s.get('start_line')}")
+        head = f"{', '.join(summary_parts)} in {total_lines} lines. "
+        if len(symbols) > max_items:
+            head += f"First {max_items} of {len(symbols)}. "
+        return head + ". ".join(lines) + "."
+    except RuntimeError as e:
+        return f"Error: {e}"
+
+
 def next_symbol(direction: int = 1, kinds=("function", "class")) -> dict:
     """Move the cursor to the adjacent function/class symbol.
 

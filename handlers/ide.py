@@ -567,6 +567,19 @@ def handle(low_speech, target_lower, target, ctx):
         play_earcon("scope_exit_class")
         return True
 
+    if any(kw in low_speech for kw in ["skim code", "skim structure", "code outline",
+                                       "code map", "list functions", "list classes",
+                                       "table of contents", "function list",
+                                       "structures in this file"]):
+        play_earcon("info")
+        try:
+            from artome_ide import skim_structure
+            tts.speak(skim_structure())
+        except Exception as e:
+            tts.speak(f"IDE daemon error: {str(e)[:40]}")
+        play_earcon("success")
+        return True
+
     if "ide summary" in low_speech or "code summary" in low_speech:
         play_earcon("info")
         try:

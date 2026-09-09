@@ -363,6 +363,14 @@ def _dispatch(label: str, text: str, mode: str) -> dict:
         return {"action": "ide_action", "speech": "IDE navigation",
                 "target": f"navigate:{text}"}
 
+    # --- Spoken structure skim (any mode) ---
+    if any(w in low for w in ["skim code", "skim structure", "code outline",
+                              "code map", "list functions", "list classes",
+                              "table of contents", "function list",
+                              "structures in this file"]):
+        return {"action": "ide_action", "speech": "Skipping structure",
+                "target": f"skim:{text}"}
+
     # --- Spoken editing (any mode, edit-in-place) ---
     if any(w in low for w in ["insert line", "insert after", "insert before",
                               "insert at line", "add line", "add new line",
